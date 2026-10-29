@@ -525,6 +525,7 @@
     renderInstitutions();
     renderAnnouncements();
     renderMarkets();
+    renderAShareDock();
     renderAi();
     renderSources();
     renderMeta();
@@ -1354,6 +1355,139 @@
 
     const summary = risk.summary || '主要市场数据暂缺';
     $('#marketReadthrough').innerHTML = `<b>外围传导：${escapeHtml(risk.label || '数据暂缺')}</b> · ${escapeHtml(summary)}。关注美元与美债利率对成长股估值的压制。`;
+  }
+
+  function renderAShareDock() {
+    const dock = $('#aShareDock');
+    if (!dock || !state.data) return;
+    const markets = state.data.markets || {};
+    const cnGroup = (markets.groups || []).find((group) => group.key === 'cn');
+    const indices = (markets.aShare && markets.aShare.indices) || (cnGroup && cnGroup.items) || [];
+    const valid = indices.filter((item) => Number.isFinite(Number(item.pct)));
+    const derivedUp = valid.filter((item) => Number(item.pct) > 0).length;
+    const derivedDown = valid.filter((item) => Number(item.pct) < 0).length;
+    const average = valid.length ? valid.reduce((sum, item) => sum + Number(item.pct), 0) / valid.length : 0;
+    const market = markets.aShare || {
+      score: clamp(Math.round(50 + average * 11 + ((derivedUp - derivedDown) / Math.max(1, valid.length)) * 7), 0, 100),
+      label: average >= 0.7 ? '偏强' : average <= -0.7 ? '偏弱' : '震荡',
+      tone: average > 0.15 ? 'up' : average < -0.15 ? 'down' : 'neutral',
+      average,
+      up: derivedUp,
+      down: derivedDown,
+      flat: Math.max(0, valid.length - derivedUp - derivedDown),
+      sampleSize: valid.length,
+      validCount: valid.length,
+      upRatio: valid.length ? Math.round((derivedUp / valid.length) * 100) : null,
+      median: null,
+      dataSource: 'indices',
+      analysis: {
+        headline: '指数样本 · 非全市场',
+        detail: `全市场涨跌家数暂不可用，当前仅展示 ${valid.length} 个主要指数。`,
+        tone: 'neutral',
+        methodology: '全市场数据暂不可用，暂以主要指数样本展示，不代表全市场个股涨跌家数',
+      },
+      anomalies: [],
+    };
+    const score = Number.isFinite(Number(market.score)) ? Number(market.score) : 50;
+    const tone = market.tone === 'up' ? 'up' : market.tone === 'down' ? 'down' : 'neutral';
+    const ring = tone === 'up' ? '#c45345' : tone === 'down' ? '#23826a' : '#b28039';
+    const status = state.data.status || {};
+
+    $('#aShareSession').textContent = status.label || '沪深市场';
+    $('#aShareSession').className = `market-session-badge ${status.state === 'open' ? 'is-open' : status.state === 'break' ? 'is-break' : 'is-closed'}`;
+    $('#aShareScoreRing').style.setProperty('--market-score', clamp(score, 0, 100));
+    $('#aShareScoreRing').style.setProperty('--market-ring', ring);
+    $('#aShareScore').textContent = Math.round(score);
+    $('#aShareVerdict').textContent = market.label || '震荡';
+    $('#aShareVerdict').className = tone;
+    $('#aShareAverage').textContent = market.upRatio != null && market.median != null
+      ? `上涨 ${Math.round(market.upRatio)}% · 中位 ${Number(market.median).toFixed(1)}%`
+      : `指数平均涨跌 ${fmtPct(market.average)}`;
+
+    $('#aShareIndexList').innerHTML = indices.length
+      ? indices.map((item) => `
+        <div class="a-share-index-row">
+          <span><b>${escapeHtml(item.name)}</b><small>${escapeHtml(item.code)}</small></span>
+          <span class="a-share-index-value"><b>${item.value != null ? fmtPrice(item.value) : '—'}</b><em class="${toneClass(Number(item.pct))}">${fmtPct(item.pct)}</em></span>
+        </div>`).join('')
+      : '<p class="a-share-empty">大盘指数暂不可用</p>';
+
+    const up = Number.isFinite(Number(market.up)) ? Number(market.up) : derivedUp;
+    const down = Number.isFinite(Number(market.down)) ? Number(market.down) : derivedDown;
+    const flat = Number.isFinite(Number(market.flat)) ? Number(market.flat) : Math.max(0, valid.length - up - down);
+    const sampleSize = Number.isFinite(Number(market.sampleSize)) ? Number(market.sampleSize) : indices.length;
+    const validCount = Number.isFinite(Number(market.validCount)) ? Number(market.validCount) : valid.length;
+    const breadthTotal = Math.max(1, validCount);
+    const analysisTone = market.analysis && ['up', 'down', 'neutral'].includes(market.analysis.tone)
+      ? market.analysis.tone
+      : tone;
+    const allUp = validCount >= 3 && up === validCount;
+    const allDown = validCount >= 3 && down === validCount;
+    const fallbackHeadline = allUp
+      ? '全线收涨 · 强势共振'
+      : allDown
+        ? '全线收跌 · 弱势共振'
+        : up > down
+          ? '涨多跌少'
+          : down > up ? '跌多涨少' : '方向分化';
+    const weightedAverage = Number.isFinite(Number(market.weightedAverage)) ? Number(market.weightedAverage) : average;
+    const analysisHeadline = market.analysis && market.analysis.headline ? market.analysis.headline : fallbackHeadline;
+    const analysisDetail = market.analysis && market.analysis.detail
+      ? market.analysis.detail
+      : `${validCount}个有效样本中${up}涨、${flat}平、${down}跌；加权涨跌${fmtPct(weightedAverage)}。`;
+    const methodology = market.analysis && market.analysis.methodology
+      ? market.analysis.methodology
+      : '全市场数据暂不可用，暂以主要指数样本展示，不代表全市场个股涨跌家数';
+    const isIndexSample = market.dataSource === 'indices' || sampleSize <= 4;
+    $('#aShareBreadth').innerHTML = `
+      <div class="a-share-breadth-head">
+        <b>${isIndexSample ? '指数样本（非全市场）' : '全市场涨跌家数'}</b>
+        <em>${isIndexSample ? '4 个主要指数' : `有效样本 ${validCount.toLocaleString('zh-CN')} 只`}</em>
+      </div>
+      <div class="a-share-breadth-counts">
+        <span><small>收涨</small><b class="up">${up}</b></span>
+        <span><small>平盘</small><b>${flat}</b></span>
+        <span><small>收跌</small><b class="down">${down}</b></span>
+      </div>
+      <i class="a-share-breadth-track">
+        <b class="up" style="width:${clamp((up / breadthTotal) * 100, 0, 100)}%"></b>
+        <b class="flat" style="width:${clamp((flat / breadthTotal) * 100, 0, 100)}%"></b>
+        <b class="down" style="width:${clamp((down / breadthTotal) * 100, 0, 100)}%"></b>
+      </i>
+      <div class="a-share-analysis ${analysisTone}">
+        <span>量化研判</span>
+        <b>${escapeHtml(analysisHeadline)}</b>
+        <p>${escapeHtml(analysisDetail)}</p>
+        <small>口径：${escapeHtml(methodology)}</small>
+      </div>`;
+
+    let anomalies = Array.isArray(market.anomalies) ? market.anomalies : [];
+    if (!anomalies.length && valid.length) {
+      anomalies = [...valid].sort((a, b) => Math.abs(Number(b.pct)) - Math.abs(Number(a.pct))).slice(0, 2).map((item) => ({
+        name: item.name,
+        pct: Number(item.pct),
+        tone: toneClass(Number(item.pct)),
+        level: Math.abs(Number(item.pct)) >= 1.5 ? '显著异动' : '盘面领先',
+        text: `${item.name}${Number(item.pct) >= 0 ? '上行' : '下行'} ${Math.abs(Number(item.pct)).toFixed(2)}%`,
+      }));
+    }
+    $('#aShareAlertCount').textContent = `${anomalies.length} 条`;
+    $('#aShareAlerts').innerHTML = anomalies.length
+      ? anomalies.slice(0, 3).map((item) => `
+        <div class="a-share-alert ${escapeHtml(item.tone || 'neutral')}">
+          <i></i>
+          <span><b>${escapeHtml(item.level || '盘面异动')}</b><small>${escapeHtml(item.text || item.name || '—')}</small></span>
+          <em>${item.value != null ? escapeHtml(item.value) : item.pct != null ? fmtPct(item.pct) : '—'}</em>
+        </div>`).join('')
+      : '<p class="a-share-empty">当前未发现明显异动</p>';
+
+    const updated = new Date(state.data.generatedAt);
+    $('#aShareUpdated').textContent = Number.isNaN(updated.getTime())
+      ? '更新时间 —'
+      : `更新 ${updated.toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false, hour: '2-digit', minute: '2-digit' })}`;
+    $('#aShareSource').textContent = isIndexSample
+      ? '指数样本'
+      : (market.dataSource === 'sina' ? '新浪 · 全市场' : '全市场');
   }
 
   function renderAi() {

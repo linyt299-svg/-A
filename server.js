@@ -24,6 +24,12 @@ const EASTMONEY_HEADERS = {
   Accept: 'application/json,text/plain,*/*',
 };
 
+const SINA_HEADERS = {
+  'User-Agent': UA,
+  Referer: 'https://finance.sina.com.cn/',
+  Accept: 'application/json,text/plain,*/*',
+};
+
 const CACHE = new Map();
 const INFLIGHT = new Map();
 const DEFAULT_WATCHLIST = ['600519', '300750', '002594', '601318', '000858', '688981'];
@@ -635,6 +641,80 @@ async function fetchMarkets({ retries = 1 } = {}) {
   }));
 }
 
+async function fetchAShareBreadth() {
+  const countUrl = 'https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeStockCount?node=hs_a';
+  const totalRaw = await fetchJson(countUrl, { headers: SINA_HEADERS, timeout: 8000, retries: 1 });
+  const total = Number(totalRaw);
+  if (!Number.isFinite(total) || total <= 0) throw new Error('No A-share universe count');
+
+  const pageSize = 100;
+  const pages = Math.ceil(total / pageSize);
+  const pageCache = new Map();
+  const getPage = async (pageNo) => {
+    if (pageCache.has(pageNo)) return pageCache.get(pageNo);
+    const url =
+      `https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData` +
+      `?page=${pageNo}&num=${pageSize}&sort=changepercent&asc=0&node=hs_a&symbol=&_s_r_a=page`;
+    const rows = await fetchJson(url, { headers: SINA_HEADERS, timeout: 6500, retries: 0 });
+    if (!Array.isArray(rows) || !rows.length) throw new Error('No A-share page data');
+    pageCache.set(pageNo, rows);
+    return rows;
+  };
+  const pctOf = (row) => Number(row && row.changepercent);
+  const countInPage = (rows, predicate) => rows.filter((row) => {
+    const pct = pctOf(row);
+    return Number.isFinite(pct) && predicate(pct);
+  }).length;
+
+  // Pages are sorted by change percent descending. Binary search avoids pulling
+  // 5,000+ rows (56 requests) just to count advancers/decliners.
+  const findLastPage = async (predicate) => {
+    let low = 1;
+    let high = pages;
+    let answer = 0;
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      const rows = await getPage(mid);
+      const first = pctOf(rows[0]);
+      if (Number.isFinite(first) && predicate(first)) {
+        answer = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return answer;
+  };
+
+  const [upPage, nonNegativePage] = await Promise.all([
+    findLastPage((pct) => pct > 0),
+    findLastPage((pct) => pct >= 0),
+  ]);
+  const up = upPage
+    ? (upPage - 1) * pageSize + countInPage(await getPage(upPage), (pct) => pct > 0)
+    : 0;
+  const nonNegative = nonNegativePage
+    ? (nonNegativePage - 1) * pageSize + countInPage(await getPage(nonNegativePage), (pct) => pct >= 0)
+    : 0;
+  const flat = Math.max(0, nonNegative - up);
+  const down = Math.max(0, total - nonNegative);
+
+  const medianRank = Math.ceil(total / 2);
+  const medianRows = await getPage(Math.ceil(medianRank / pageSize));
+  const medianIndex = (medianRank - 1) % pageSize;
+  const median = Number.isFinite(pctOf(medianRows[medianIndex])) ? round(pctOf(medianRows[medianIndex])) : 0;
+
+  return {
+    total,
+    valid: total,
+    up,
+    flat,
+    down,
+    median,
+    source: 'sina',
+  };
+}
+
 async function fetchTencentGlobal() {
   const symbols = [
     'sh000001', 'sz399001', 'sz399006', 'sh000300',
@@ -1220,7 +1300,151 @@ function computeFlow(dailyRaw, live, quote, rows) {
   };
 }
 
-function computeMarkets(groups) {
+function buildAShareOverview(cn, breadth) {
+  const validIndices = cn.filter((item) => Number.isFinite(item.pct));
+  const indexAverage = validIndices.length ? mean(validIndices.map((item) => item.pct)) : 0;
+  const indexUp = validIndices.filter((item) => item.pct > 0).length;
+  const indexDown = validIndices.filter((item) => item.pct < 0).length;
+  const indexFlat = Math.max(0, validIndices.length - indexUp - indexDown);
+  const indexWeights = { '000001': 0.25, '399001': 0.2, '399006': 0.2, '000300': 0.35 };
+  const availableIndexWeight = validIndices.reduce((sum, item) => sum + (indexWeights[item.code] || 0), 0);
+  const weightedIndex = availableIndexWeight
+    ? validIndices.reduce((sum, item) => sum + item.pct * (indexWeights[item.code] || 0), 0) / availableIndexWeight
+    : 0;
+
+  if (!breadth || !Number.isFinite(Number(breadth.valid)) || Number(breadth.valid) <= 0) {
+    const score = round(clamp(50 + weightedIndex * 11 + ((indexUp - indexDown) / Math.max(1, validIndices.length)) * 7, 0, 100), 0);
+    let label = '震荡';
+    let tone = 'neutral';
+    if (score >= 70) { label = '强势'; tone = 'up'; }
+    else if (score >= 58) { label = '偏强'; tone = 'up'; }
+    else if (score < 30) { label = '弱势'; tone = 'down'; }
+    else if (score < 43) { label = '偏弱'; tone = 'down'; }
+    return {
+      score,
+      label,
+      tone,
+      average: round(indexAverage),
+      weightedAverage: round(weightedIndex),
+      up: indexUp,
+      flat: indexFlat,
+      down: indexDown,
+      sampleSize: validIndices.length,
+      validCount: validIndices.length,
+      median: null,
+      upRatio: validIndices.length ? round((indexUp / validIndices.length) * 100) : null,
+      downRatio: validIndices.length ? round((indexDown / validIndices.length) * 100) : null,
+      indexAverage: round(indexAverage),
+      dataSource: 'indices',
+      analysis: {
+        headline: '指数样本 · 非全市场',
+        detail: `全市场涨跌家数暂不可用，当前仅展示 ${validIndices.length} 个主要指数：${indexUp} 涨、${indexFlat} 平、${indexDown} 跌。`,
+        tone: 'neutral',
+        coverage: `${validIndices.length}/${validIndices.length}`,
+        methodology: '全市场数据暂不可用，暂以主要指数样本展示，不代表全市场个股涨跌家数',
+      },
+      indices: cn,
+      anomalies: [],
+    };
+  }
+
+  const total = Number(breadth.valid);
+  const up = Number(breadth.up) || 0;
+  const flat = Number(breadth.flat) || 0;
+  const down = Number(breadth.down) || 0;
+  const median = Number(breadth.median) || 0;
+  const upRatio = total ? round((up / total) * 100) : 0;
+  const downRatio = total ? round((down / total) * 100) : 0;
+  const breadthRatio = total ? (up - down) / total : 0;
+  const score = round(
+    clamp(50 + breadthRatio * 32 + clamp(median * 8, -16, 16) + clamp(indexAverage * 2, -5, 5), 0, 100),
+    0,
+  );
+  let label = '震荡';
+  let tone = 'neutral';
+  if (score >= 70) { label = '强势'; tone = 'up'; }
+  else if (score >= 58) { label = '偏强'; tone = 'up'; }
+  else if (score < 30) { label = '弱势'; tone = 'down'; }
+  else if (score < 43) { label = '偏弱'; tone = 'down'; }
+
+  let breadthLabel = '多空分化';
+  if (upRatio >= 60) breadthLabel = '涨多跌少';
+  else if (downRatio >= 60) breadthLabel = '跌多涨少';
+  else if (Math.abs(upRatio - downRatio) <= 5) breadthLabel = '多空均衡';
+
+  let divergence = '';
+  if (indexAverage > 0.15 && median < 0) divergence = '指数强、个股弱 · 背离';
+  else if (indexAverage < -0.15 && median > 0) divergence = '指数弱、个股强 · 背离';
+  const analysisHeadline = divergence || `${breadthLabel}${upRatio >= 60 ? ' · 广度偏强' : downRatio >= 60 ? ' · 广度偏弱' : ''}`;
+  const analysisTone = breadthRatio >= 0.08 ? 'up' : breadthRatio <= -0.08 ? 'down' : 'neutral';
+  const sentiment = upRatio >= 60
+    ? '赚钱效应扩散'
+    : downRatio >= 60
+      ? '亏钱效应扩散'
+      : '赚钱效应一般';
+  const analysisDetail =
+    `全市场 ${total.toLocaleString('zh-CN')} 只 A 股中，${up} 涨 / ${flat} 平 / ${down} 跌，` +
+    `上涨占比 ${upRatio}%，个股中位数 ${fmtPct(median)}；主要指数平均 ${fmtPct(indexAverage)}。${sentiment}。`;
+
+  const anomalies = [
+    {
+      level: '广度信号',
+      text: `${up} 涨 / ${down} 跌`,
+      value: `${upRatio}%`,
+      tone: upRatio >= 50 ? 'up' : 'down',
+    },
+    {
+      level: '个股中位数',
+      text: `中位数 ${fmtPct(median)}`,
+      value: fmtPct(median),
+      tone: median > 0 ? 'up' : median < 0 ? 'down' : 'neutral',
+    },
+  ];
+  if (divergence) {
+    anomalies.push({
+      level: '指数 / 个股背离',
+      text: `指数 ${fmtPct(indexAverage)} / 个股 ${fmtPct(median)}`,
+      value: '背离',
+      tone: 'warn',
+    });
+  } else {
+    anomalies.push({
+      level: '涨跌比',
+      text: `涨 ${up} / 跌 ${down}`,
+      value: down ? `${(up / down).toFixed(2)}:1` : '∞',
+      tone: breadthRatio >= 0 ? 'up' : 'down',
+    });
+  }
+
+  return {
+    score,
+    label,
+    tone,
+    average: round(indexAverage),
+    weightedAverage: round(weightedIndex),
+    up,
+    flat,
+    down,
+    sampleSize: total,
+    validCount: total,
+    median,
+    upRatio,
+    downRatio,
+    indexAverage: round(indexAverage),
+    dataSource: breadth.source || 'full-market',
+    analysis: {
+      headline: analysisHeadline,
+      detail: analysisDetail,
+      tone: analysisTone,
+      coverage: `${total}/${total}`,
+      methodology: '沪深京全市场 A 股，按当日涨跌幅统计；剔除无报价 / 停牌，数据源为新浪财经',
+    },
+    indices: cn,
+    anomalies,
+  };
+}
+
+function computeMarkets(groups, breadth) {
   const byCode = new Map();
   groups.forEach((g) => g.items.forEach((i) => byCode.set(i.code, i)));
   const cn = ['000001', '399001', '399006', '000300'].map((c) => byCode.get(c)).filter(Boolean);
@@ -1262,7 +1486,13 @@ function computeMarkets(groups) {
     gold ? `黄金 ${fmt(gold.pct)}` : null,
   ].filter(Boolean).join('，');
 
-  return { groups, risk: { score, label, tone, average: round(avg), summary } };
+  const aShare = buildAShareOverview(cn, breadth);
+
+  return {
+    groups,
+    risk: { score, label, tone, average: round(avg), summary },
+    aShare,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1932,7 +2162,7 @@ async function buildStockPayload(code, { refresh = false } = {}) {
     ? cached(`profile:${code}`, 24 * 60 * 60_000, () => fetchProfile(code)).catch(() => null)
     : Promise.resolve(null);
 
-  const [reportsRaw, announcementsRaw, flowRaw, liveFlow, markets, profile] = await Promise.all([
+  const [reportsRaw, announcementsRaw, flowRaw, liveFlow, markets, profile, breadth] = await Promise.all([
     cached(`reports:${code}`, 30 * 60_000, () => fetchReports(code), { stale: refresh })
       .catch(() => []),
     cached(`ann:${code}`, 10 * 60_000, () => fetchAnnouncements(code), { stale: refresh })
@@ -1947,6 +2177,7 @@ async function buildStockPayload(code, { refresh = false } = {}) {
         risk: { score: 50, label: '数据暂缺', tone: 'neutral', summary: '' },
       }))),
     profilePromise,
+    cached('aShare:breadth', 5 * 60_000, fetchAShareBreadth).catch(() => null),
   ]);
 
   if (profile) {
@@ -1959,8 +2190,9 @@ async function buildStockPayload(code, { refresh = false } = {}) {
   const technical = computeTechnical(rows, quote.volumeRatio);
   const reports = computeReports(reportsRaw, quote.price);
   const flow = computeFlow(flowRaw, liveFlow, quote, rows);
-  const marketsData = markets.groups ? markets : computeMarkets(markets);
-  marketsData.provider = markets.groups ? 'fallback' : 'eastmoney';
+  const marketGroups = Array.isArray(markets) ? markets : markets.groups;
+  const marketsData = computeMarkets(marketGroups, breadth);
+  marketsData.provider = Array.isArray(markets) ? 'eastmoney' : 'fallback';
   const ai = computeAi({ quote, technical, flow, reports, markets: marketsData, rows });
 
   const announcements = safeArray(announcementsRaw.list).slice(0, 8).map((item) => {

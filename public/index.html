@@ -636,6 +636,75 @@
     </footer>
   </div>
 
+  <!-- Fixed A-share market overview (wide desktop) -->
+  <aside class="a-share-dock panel" id="aShareDock" aria-label="A股大盘概览">
+    <div class="a-share-dock-head">
+      <div>
+        <p class="panel-kicker">A-SHARE PULSE</p>
+        <h2>A股大盘</h2>
+      </div>
+      <span class="market-session-badge" id="aShareSession">加载中</span>
+    </div>
+
+    <div class="a-share-score-card">
+      <div class="a-share-score-ring" id="aShareScoreRing" style="--market-score:50;--market-ring:#b28039">
+        <div><b id="aShareScore">—</b><span>/ 100</span></div>
+      </div>
+      <div class="a-share-score-copy">
+        <span>大盘综合得分</span>
+        <b id="aShareVerdict">等待行情</b>
+        <small id="aShareAverage">全市场上涨占比 —</small>
+      </div>
+    </div>
+
+    <div class="a-share-dock-section">
+      <div class="a-share-section-title">
+        <span>主要指数</span>
+        <em>实时涨跌</em>
+      </div>
+      <div class="a-share-index-list" id="aShareIndexList">
+        <div class="a-share-index-skeleton"></div>
+        <div class="a-share-index-skeleton"></div>
+        <div class="a-share-index-skeleton"></div>
+        <div class="a-share-index-skeleton"></div>
+      </div>
+    </div>
+
+    <div class="a-share-breadth" id="aShareBreadth">
+      <div class="a-share-breadth-head">
+        <b>全市场涨跌家数</b>
+        <em>有效样本 — 只</em>
+      </div>
+      <div class="a-share-breadth-counts">
+        <span><small>收涨</small><b class="up">—</b></span>
+        <span><small>平盘</small><b>—</b></span>
+        <span><small>收跌</small><b class="down">—</b></span>
+      </div>
+      <i class="a-share-breadth-track"><b class="flat" style="width:100%"></b></i>
+      <div class="a-share-analysis neutral">
+        <span>量化研判</span>
+        <b>等待全市场行情</b>
+        <p>行情就绪后统计沪深京全市场上涨、下跌、平盘家数，并分析广度、中位数与指数背离。</p>
+        <small>口径：沪深京全市场 A 股，剔除停牌 / 无报价</small>
+      </div>
+    </div>
+
+    <div class="a-share-dock-section a-share-alert-section">
+      <div class="a-share-section-title">
+        <span>盘面异动</span>
+        <em id="aShareAlertCount">—</em>
+      </div>
+      <div class="a-share-alerts" id="aShareAlerts">
+        <p class="a-share-empty">正在扫描指数异动…</p>
+      </div>
+    </div>
+
+    <div class="a-share-dock-foot">
+      <span><i></i><b id="aShareUpdated">等待更新</b></span>
+      <em id="aShareSource">公开行情</em>
+    </div>
+  </aside>
+
   <!-- AI full analysis dialog -->
   <dialog class="ai-dialog" id="aiDialog" aria-labelledby="aiDialogTitle">
     <div class="dialog-inner">

@@ -45,7 +45,7 @@ $env:PORT=8080
 npm start
 ```
 
-需要让局域网或外网访问时，见 [DEPLOY.md](DEPLOY.md)，包含临时隧道、Cloudflare Tunnel、Docker / 云服务器三种方案。
+需要让局域网或外网访问时，见 [DEPLOY.md](DEPLOY.md)，包含临时隧道、Cloudflare Tunnel、Docker / 云服务器三种方案。Render 免费部署请直接看 [DEPLOY_RENDER.md](DEPLOY_RENDER.md)。
 
 ## 技术架构
 

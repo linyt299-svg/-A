@@ -1,0 +1,15 @@
+{
+  "name": "guanlan-stocklens",
+  "version": "1.0.0",
+  "private": true,
+  "description": "观澜投研：一页看懂个股走势、资金、研报、公告、技术指标与外围市场。",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED"
+}

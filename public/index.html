@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#f2efe6" />
+  <meta name="description" content="观澜投研 —— 一页看懂个股走势、资金、研报、公告、技术指标与外围市场。" />
+  <title>观澜投研 · 一页看懂一只股票</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230d2b24'/%3E%3Cpath d='M12 40c6-12 12-12 18 0s12 12 22-2' stroke='%23d5e97a' stroke-width='4' fill='none' stroke-linecap='round'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <svg class="svg-sprite" aria-hidden="true">
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.8-5.2 2.8 1-5.8-4.3-4.1 5.9-.9z"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 6v5h-5"/><path d="M4 18v-5h5"/><path d="M6.1 9a7 7 0 0 1 11.2-2.3L20 11M4 13l2.7 4.3A7 7 0 0 0 17.9 15"/></symbol>
+    <symbol id="i-arrow-up-right" viewBox="0 0 24 24"><path d="M7 17 17 7M8 7h9v9"/></symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="m12 3 1.7 5.3L19 10l-5.3 1.7L12 17l-1.7-5.3L5 10l5.3-1.7z"/><path d="m19 16 .7 2.3L22 19l-2.3.7L19 22l-.7-2.3L16 19l2.3-.7z"/></symbol>
+    <symbol id="i-wave" viewBox="0 0 24 24"><path d="M2 14c3.2-6.5 6.3-6.5 9.5 0s6.3 6.5 10.5-1"/><path d="M2 8c3.2-6.5 6.3-6.5 9.5 0S17.8 14.5 22 7"/></symbol>
+    <symbol id="i-trend" viewBox="0 0 24 24"><path d="M3 17 9 11l4 4 7-8"/><path d="M15 7h5v5"/></symbol>
+    <symbol id="i-wallet" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="14" rx="3"/><path d="M3 10h18M16 15h2"/></symbol>
+    <symbol id="i-building" viewBox="0 0 24 24"><path d="M4 21V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v16M16 9h3a1 1 0 0 1 1 1v11M8 7h4M8 11h4M8 15h4M2 21h20"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 4.5 6v5.5c0 4.6 3 7.8 7.5 9.5 4.5-1.7 7.5-4.9 7.5-9.5V6z"/><path d="m9 12 2 2 4-4"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9"/><path d="M20 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h5"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></symbol>
+    <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 4v16M6 14l6 6 6-6"/></symbol>
+  </svg>
+
+  <div class="page-noise" aria-hidden="true"></div>
+
+  <header class="topbar" id="topbar">
+    <a class="brand" href="#overview" aria-label="观澜投研首页">
+      <span class="brand-mark"><svg><use href="#i-wave"/></svg></span>
+      <span class="brand-copy">
+        <strong>观澜投研</strong>
+        <small>GUANLAN RESEARCH</small>
+      </span>
+    </a>
+
+    <div class="search-shell" id="searchShell">
+      <svg class="icon search-icon"><use href="#i-search"/></svg>
+      <input id="stockSearch" type="text" placeholder="搜索股票名称 / 代码" autocomplete="off" spellcheck="false" aria-label="搜索股票" />
+      <kbd>/</kbd>
+      <div class="search-results" id="searchResults" hidden></div>
+    </div>
+
+    <div class="topbar-right">
+      <div class="market-state" id="marketState">
+        <span class="status-dot"></span>
+        <span class="market-state-copy"><b>交易中</b><small>沪深市场</small></span>
+      </div>
+      <div class="topbar-divider"></div>
+      <div class="clock-block">
+        <strong id="clock">10:03:08</strong>
+        <small id="today">2026.10.29 周四</small>
+      </div>
+      <button class="icon-button refresh-button" id="refreshBtn" type="button" title="刷新全部数据" aria-label="刷新全部数据">
+        <svg class="icon"><use href="#i-refresh"/></svg>
+      </button>
+      <div class="profile-chip" title="研究台账户">
+        <span class="profile-avatar">澜</span>
+        <span class="profile-copy"><b>研究台</b><small>Personal</small></span>
+      </div>
+    </div>
+  </header>
+
+  <nav class="section-nav" id="sectionNav" aria-label="页面章节">
+    <div class="nav-links">
+      <a href="#overview" class="nav-link active">总览</a>
+      <a href="#conclusion" class="nav-link">结论</a>
+      <a href="#trend" class="nav-link">走势</a>
+      <a href="#technical" class="nav-link">技术面</a>
+      <a href="#flow" class="nav-link">资金面</a>
+      <a href="#institutions" class="nav-link">机构观点</a>
+      <a href="#announcements" class="nav-link">公告</a>
+      <a href="#global" class="nav-link">外围市场</a>
+    </div>
+    <div class="nav-meta">
+      <span class="live-dot"></span>
+      <span>数据更新</span>
+      <time id="updateTime">--:--:--</time>
+      <span class="nav-sep"></span>
+      <span id="sourceLabel">东方财富公开数据</span>
+    </div>
+  </nav>
+
+  <div class="app-body">
+    <main class="workspace">
+      <!-- Watchlist -->
+      <aside class="watchlist-panel panel" aria-label="自选股">
+        <div class="watchlist-head">
+          <div>
+            <p class="panel-kicker">WATCHLIST</p>
+            <h2>我的自选</h2>
+          </div>
+          <button class="small-add" id="addWatchBtn" type="button" title="添加自选股">
+            <svg class="icon"><use href="#i-plus"/></svg>
+          </button>
+        </div>
+        <div class="watchlist-items" id="watchlist">
+          <div class="watch-skeleton"><span></span><span></span><span></span></div>
+          <div class="watch-skeleton"><span></span><span></span><span></span></div>
+          <div class="watch-skeleton"><span></span><span></span><span></span></div>
+          <div class="watch-skeleton"><span></span><span></span><span></span></div>
+        </div>
+        <button class="add-watch-wide" id="addWatchWide" type="button">
+          <svg class="icon"><use href="#i-plus"/></svg>
+          <span>添加自选</span>
+          <kbd>⌘ K</kbd>
+        </button>
+        <div class="watchlist-foot">
+          <div class="mini-stat">
+            <span>自选平均</span>
+            <b id="watchAvg">—</b>
+          </div>
+          <div class="mini-stat right">
+            <span>上涨 / 下跌</span>
+            <b id="watchBreadth">—</b>
+          </div>
+        </div>
+        <div class="watchlist-tip">
+          <svg class="icon"><use href="#i-sparkles"/></svg>
+          <p>选中任意股票，右侧 AI 模型会同步重算趋势、资金与机构信号。</p>
+        </div>
+      </aside>
+
+      <!-- Primary content -->
+      <section class="primary-column">
+        <!-- Hero -->
+        <section class="hero panel" id="overview">
+          <div class="hero-grid" aria-hidden="true"></div>
+          <div class="hero-top">
+            <div class="stock-identity">
+              <div class="eyebrow">
+                <span class="exchange-badge" id="exchangeBadge">SH</span>
+                <span class="eyebrow-item" id="stockIndustry">白酒Ⅱ</span>
+                <span class="eyebrow-dot"></span>
+                <span class="eyebrow-item" id="stockRegion">贵州板块</span>
+                <span class="eyebrow-dot"></span>
+                <span class="eyebrow-item" id="tradingDate">2026.10.29</span>
+              </div>
+              <div class="stock-title-row">
+                <h1 id="stockName">贵州茅台</h1>
+                <span class="stock-code" id="stockCode">600519</span>
+                <button class="star-button is-active" id="starBtn" type="button" title="移出自选" aria-label="移出自选">
+                  <svg class="icon"><use href="#i-star"/></svg>
+                </button>
+              </div>
+              <div class="stock-tags">
+                <span class="tag tag-ai" id="heroAiTag" role="button" tabindex="0" title="打开完整 AI 研判">
+                  <svg class="icon"><use href="#i-sparkles"/></svg>
+                  <span>AI 研判 · 加载中</span>
+                </span>
+                <span class="tag" id="heroFlowTag" role="button" tabindex="0" title="跳转资金流向">资金 · —</span>
+                <span class="tag" id="heroReportTag" role="button" tabindex="0" title="跳转机构观点">机构 · —</span>
+              </div>
+            </div>
+
+            <div class="price-block">
+              <div class="price-line">
+                <span class="price" id="stockPrice">—</span>
+                <span class="price-currency">CNY</span>
+              </div>
+              <div class="change-line">
+                <span class="change-pill" id="stockChange">—</span>
+                <span class="price-note">较昨收 <b id="prevClose">—</b></span>
+              </div>
+              <p class="price-time">
+                <span class="pulse-dot"></span>
+                <span id="quoteStatus">行情加载中</span>
+              </p>
+            </div>
+          </div>
+
+          <div class="hero-stats" id="heroStats">
+            <div class="stat"><span>今开</span><b data-stat="open">—</b></div>
+            <div class="stat"><span>最高</span><b data-stat="high">—</b></div>
+            <div class="stat"><span>最低</span><b data-stat="low">—</b></div>
+            <div class="stat"><span>成交额</span><b data-stat="amount">—</b></div>
+            <div class="stat"><span>换手率</span><b data-stat="turnover">—</b></div>
+            <div class="stat"><span>量比</span><b data-stat="volumeRatio">—</b></div>
+            <div class="stat"><span>总市值</span><b data-stat="totalMv">—</b></div>
+            <div class="stat"><span>PE / PB</span><b data-stat="valuation">—</b></div>
+          </div>
+
+          <div class="hero-loading" id="heroLoading">
+            <div class="skeleton sk-lg"></div>
+            <div class="skeleton sk-md"></div>
+          </div>
+        </section>
+
+        <!-- Decision snapshot -->
+        <section class="panel conclusion-panel" id="conclusion">
+          <div class="panel-head conclusion-head">
+            <div>
+              <p class="panel-kicker">DECISION SNAPSHOT</p>
+              <div class="title-with-badge">
+                <h2>核心结论</h2>
+                <span class="soft-badge">AI 建议 · 关键价位</span>
+              </div>
+            </div>
+            <div class="conclusion-score" id="conclusionScoreBox">
+              <span>AI 综合评分</span>
+              <b id="conclusionScore">—</b>
+              <em id="conclusionStance">—</em>
+            </div>
+          </div>
+
+          <div class="conclusion-grid">
+            <article class="conclusion-ai">
+              <div class="conclusion-advice">
+                <div class="conclusion-label">
+                  <span>AI 建议</span>
+                  <em id="conclusionConfidence">置信度 —</em>
+                </div>
+                <h3 id="conclusionAdviceTitle">—</h3>
+                <p id="conclusionAdviceText">—</p>
+              </div>
+              <div class="conclusion-levels">
+                <div class="conclusion-level support">
+                  <span>支撑位</span>
+                  <b id="conclusionSupport">—</b>
+                  <small id="conclusionSupportGap">—</small>
+                </div>
+                <div class="conclusion-level resistance">
+                  <span>压力位</span>
+                  <b id="conclusionResistance">—</b>
+                  <small id="conclusionResistanceGap">—</small>
+                </div>
+              </div>
+            </article>
+
+            <article class="conclusion-card">
+              <div class="conclusion-label">
+                <span>技术结论</span>
+                <em class="signal-badge neutral" id="conclusionTechBadge">—</em>
+              </div>
+              <h3 id="conclusionTechTitle">—</h3>
+              <p id="conclusionTechText">—</p>
+              <div class="conclusion-kpis">
+                <div><span>指标共振</span><b id="conclusionTechCount">—</b></div>
+                <div><span>20 日位置</span><b id="conclusionTechPosition">—</b></div>
+              </div>
+            </article>
+
+            <article class="conclusion-card">
+              <div class="conclusion-label">
+                <span>资金分析结论</span>
+                <em class="signal-badge neutral" id="conclusionFlowBadge">—</em>
+              </div>
+              <h3 id="conclusionFlowTitle">—</h3>
+              <p id="conclusionFlowText">—</p>
+              <div class="conclusion-kpis">
+                <div><span>5 日主力</span><b id="conclusionFlow5">—</b></div>
+                <div><span>今日主力</span><b id="conclusionFlowToday">—</b></div>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <!-- Trend -->
+        <section class="panel trend-panel" id="trend">
+          <div class="panel-head trend-head">
+            <div>
+              <p class="panel-kicker">PRICE ACTION</p>
+              <div class="title-with-badge">
+                <h2>近期走势</h2>
+                <span class="soft-badge">前复权 · 日线</span>
+              </div>
+            </div>
+            <div class="trend-controls">
+              <div class="ma-legend" aria-label="均线图例">
+                <span><i style="--c:#c39143"></i>MA5</span>
+                <span><i style="--c:#2e7565"></i>MA20</span>
+                <span><i style="--c:#8174a6"></i>MA60</span>
+              </div>
+              <div class="range-tabs" id="rangeTabs" role="group" aria-label="走势区间">
+                <button type="button" data-range="1M">1月</button>
+                <button type="button" data-range="3M" class="active">3月</button>
+                <button type="button" data-range="6M">6月</button>
+                <button type="button" data-range="1Y">1年</button>
+              </div>
+            </div>
+          </div>
+          <div class="chart-wrap">
+            <div id="klineChart" class="kline-chart" role="img" aria-label="股票K线走势图"></div>
+            <div class="chart-loading" id="chartLoading"><span></span><span></span><span></span></div>
+          </div>
+          <div class="trend-summary" id="trendSummary">
+            <div class="trend-metric"><span>区间涨跌</span><b>—</b></div>
+            <div class="trend-metric"><span>最大回撤</span><b>—</b></div>
+            <div class="trend-metric"><span>年化波动</span><b>—</b></div>
+            <div class="trend-metric"><span>20日均额</span><b>—</b></div>
+            <div class="trend-metric"><span>20日位置</span><b>—</b></div>
+          </div>
+        </section>
+
+        <div class="two-column-grid">
+          <!-- Technical -->
+          <section class="panel technical-panel" id="technical">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">TECHNICALS</p>
+                <div class="title-with-badge">
+                  <h2>技术指标</h2>
+                  <span class="signal-badge neutral" id="techVerdict">等待计算</span>
+                </div>
+              </div>
+              <span class="panel-note" id="techCount">6 项信号</span>
+            </div>
+            <div class="indicator-grid" id="indicatorGrid">
+              <div class="indicator-card skeleton-card"></div>
+              <div class="indicator-card skeleton-card"></div>
+              <div class="indicator-card skeleton-card"></div>
+              <div class="indicator-card skeleton-card"></div>
+              <div class="indicator-card skeleton-card"></div>
+              <div class="indicator-card skeleton-card"></div>
+            </div>
+            <div class="signal-resonance" id="signalResonance">
+              <div class="resonance-copy"><span>指标共振</span><b>—</b></div>
+              <div class="resonance-track"><i style="width:0%"></i></div>
+              <span class="resonance-note">—</span>
+            </div>
+          </section>
+
+          <!-- Flow -->
+          <section class="panel flow-panel" id="flow">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">CAPITAL FLOW</p>
+                <div class="title-with-badge">
+                  <h2>资金流向</h2>
+                  <span class="soft-badge" id="flowDate">—</span>
+                </div>
+              </div>
+              <span class="flow-signal" id="flowSignal">—</span>
+            </div>
+            <div class="flow-today">
+              <div>
+                <span class="flow-label">今日主力净额</span>
+                <div class="flow-big" id="flowMain">—</div>
+                <span class="flow-sub" id="flowMainSub">占成交额 —</span>
+              </div>
+              <div class="flow-breakdown" id="flowBreakdown">
+                <div class="flow-row"><span>超大单</span><b>—</b></div>
+                <div class="flow-row"><span>大单</span><b>—</b></div>
+                <div class="flow-row"><span>中单</span><b>—</b></div>
+                <div class="flow-row"><span>小单</span><b>—</b></div>
+              </div>
+            </div>
+            <div class="flow-history-head">
+              <span>近 10 日主力净额<em id="flowHistoryDate"></em></span>
+              <span class="flow-legend"><i class="in"></i>净流入 <i class="out"></i>净流出</span>
+            </div>
+            <div class="flow-chart" id="flowChart" aria-label="近十日主力资金净流入流出柱状图"></div>
+            <div class="flow-foot">
+              <div><span>5 日累计</span><b id="flowSum5">—</b></div>
+              <div><span>10 日累计</span><b id="flowSum10">—</b></div>
+              <p>主力 = 超大单 + 大单</p>
+            </div>
+          </section>
+        </div>
+
+        <!-- Institutions -->
+        <section class="panel institution-panel" id="institutions">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">INSTITUTIONAL VIEW</p>
+              <div class="title-with-badge">
+                <h2>机构观点与研报</h2>
+                <span class="soft-badge" id="reportHorizon">近一年</span>
+              </div>
+            </div>
+            <a class="text-link" id="allReportsLink" href="https://data.eastmoney.com/report/stock.jshtml" target="_blank" rel="noopener noreferrer">
+              全部研报 <svg class="icon"><use href="#i-arrow-up-right"/></svg>
+            </a>
+          </div>
+
+          <div class="institution-summary" id="institutionSummary">
+            <div class="consensus-dial-card">
+              <div class="consensus-dial" id="consensusDial" style="--value:0;--tone:#b9b3a5">
+                <div class="dial-center"><b id="consensusScore">—</b><span>共识分</span></div>
+              </div>
+              <div class="consensus-copy">
+                <span>机构共识</span>
+                <b id="consensusLabel">—</b>
+                <small id="consensusCoverage">—</small>
+              </div>
+            </div>
+            <div class="inst-kpi"><span>买入 / 增持</span><b id="instPositive">—</b><small id="instPositiveSub">—</small></div>
+            <div class="inst-kpi"><span>平均目标价</span><b id="instTarget">—</b><small id="instTargetSub">—</small></div>
+            <div class="inst-kpi"><span>次年一致 EPS</span><b id="instEps">—</b><small id="instPe">—</small></div>
+          </div>
+
+          <div class="institution-body">
+            <div class="rating-block">
+              <div class="subhead"><span>评级分布</span><span id="ratingTotal">—</span></div>
+              <div class="rating-bars" id="ratingBars">
+                <div class="rating-row"><span>买入</span><div class="rating-track"><i style="width:0%"></i></div><b>—</b></div>
+                <div class="rating-row"><span>增持</span><div class="rating-track"><i style="width:0%"></i></div><b>—</b></div>
+                <div class="rating-row"><span>中性</span><div class="rating-track"><i style="width:0%"></i></div><b>—</b></div>
+                <div class="rating-row"><span>减持</span><div class="rating-track"><i style="width:0%"></i></div><b>—</b></div>
+              </div>
+              <div class="rating-note" id="ratingNote">—</div>
+            </div>
+
+            <div class="reports-block">
+              <div class="subhead"><span>最新研报</span><span>按发布时间排序</span></div>
+              <div class="report-list" id="reportList">
+                <div class="report-skeleton"><span></span><span></span></div>
+                <div class="report-skeleton"><span></span><span></span></div>
+                <div class="report-skeleton"><span></span><span></span></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div class="two-column-grid lower-grid">
+          <!-- Announcements -->
+          <section class="panel announcement-panel" id="announcements">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">DISCLOSURES</p>
+                <div class="title-with-badge">
+                  <h2>公司公告</h2>
+                  <span class="soft-badge" id="annCount">—</span>
+                </div>
+              </div>
+              <a class="text-link" id="allAnnLink" href="https://data.eastmoney.com/notices/stock/600519.html" target="_blank" rel="noopener noreferrer">
+                公告列表 <svg class="icon"><use href="#i-arrow-up-right"/></svg>
+              </a>
+            </div>
+            <div class="announcement-list" id="announcementList">
+              <div class="ann-skeleton"></div>
+              <div class="ann-skeleton"></div>
+              <div class="ann-skeleton"></div>
+              <div class="ann-skeleton"></div>
+            </div>
+          </section>
+
+          <!-- Global markets -->
+          <section class="panel global-panel" id="global">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">GLOBAL TAPE</p>
+                <div class="title-with-badge">
+                  <h2>外围市场</h2>
+                  <span class="signal-badge neutral" id="riskBadge">—</span>
+                </div>
+              </div>
+              <div class="risk-meter" title="外围风险偏好综合分">
+                <span>风险偏好</span>
+                <div class="risk-meter-track"><i id="riskMeterFill" style="width:50%"></i></div>
+                <b id="riskScore">—</b>
+              </div>
+            </div>
+            <div class="market-groups" id="marketGroups">
+              <div class="market-skeleton"></div>
+              <div class="market-skeleton"></div>
+            </div>
+            <p class="market-readthrough" id="marketReadthrough">—</p>
+          </section>
+        </div>
+
+      </section>
+
+      <!-- Insight rail -->
+      <aside class="insight-rail" aria-label="AI 研判">
+        <section class="ai-card" id="aiCard">
+          <div class="ai-glow" aria-hidden="true"></div>
+          <div class="ai-head">
+            <div class="ai-title">
+              <span class="ai-orb"><svg class="icon"><use href="#i-sparkles"/></svg></span>
+              <div><b>AI 策略研判</b><small>多因子模型 · 本地计算</small></div>
+            </div>
+            <span class="ai-version">v2.4</span>
+          </div>
+
+          <div class="ai-score-row">
+            <div class="ai-score-ring" id="aiScoreRing" style="--score:0;--ring:#d5e97a">
+              <div><b id="aiScore">—</b><span>/ 100</span></div>
+            </div>
+            <div class="ai-stance">
+              <span>模型观点</span>
+              <b id="aiStance">计算中</b>
+              <div class="confidence-line">
+                <span>置信度</span>
+                <div class="confidence-track"><i id="confidenceFill" style="width:0%"></i></div>
+                <em id="aiConfidence">—</em>
+              </div>
+            </div>
+          </div>
+
+          <p class="ai-summary" id="aiSummary">正在读取行情、资金、研报与外围市场数据，生成多因子研判…</p>
+
+          <div class="ai-factors" id="aiFactors">
+            <div class="ai-factor"><span>趋势结构</span><i><b style="width:0%"></b></i><em>—</em></div>
+            <div class="ai-factor"><span>资金动能</span><i><b style="width:0%"></b></i><em>—</em></div>
+            <div class="ai-factor"><span>机构共识</span><i><b style="width:0%"></b></i><em>—</em></div>
+          </div>
+
+          <div class="ai-levels" id="aiLevels">
+            <div><span>支撑</span><b>—</b></div>
+            <div><span>压力</span><b>—</b></div>
+            <div><span>风险位</span><b>—</b></div>
+          </div>
+
+          <button class="ai-detail-button" id="aiDetailBtn" type="button">
+            <span>查看完整研判</span>
+            <svg class="icon"><use href="#i-arrow-up-right"/></svg>
+          </button>
+
+          <p class="ai-disclaimer">模型输出仅作信息参考，不构成投资建议。市场有风险，决策需独立判断。</p>
+        </section>
+
+        <section class="panel forecast-panel" aria-label="明日趋势预判与量化操作指导">
+          <div class="forecast-head">
+            <div>
+              <p class="panel-kicker">TOMORROW OUTLOOK</p>
+              <div class="title-with-badge">
+                <h2>明日趋势预判</h2>
+                <span class="soft-badge" id="forecastDate">—</span>
+              </div>
+            </div>
+            <span class="forecast-conf" id="forecastConfidence">—</span>
+          </div>
+          <div class="forecast-hero">
+            <b id="forecastTrend">—</b>
+            <span id="forecastDirection">—</span>
+          </div>
+          <div class="forecast-probs" id="forecastProbs"></div>
+          <div class="forecast-range">
+            <span>预计运行区间</span>
+            <b id="forecastRange">—</b>
+          </div>
+          <p class="forecast-basis" id="forecastBasis">—</p>
+          <div class="forecast-ai">
+            <span class="ai-mini">AI</span>
+            <p id="forecastNarrative">—</p>
+          </div>
+
+          <div class="position-block">
+            <div class="position-head">
+              <span>AI 持仓量化建议</span>
+              <button class="position-edit" id="positionEditBtn" type="button">录入持仓</button>
+            </div>
+            <div class="position-empty" id="positionEmpty">
+              录入成本价与持股数，AI 会结合明日预判生成加减仓、止盈止损建议。
+            </div>
+            <div class="position-filled is-hidden" id="positionFilled">
+              <div class="position-line">
+                <span>成本 <b id="positionCost">—</b></span>
+                <span>持股 <b id="positionShares">—</b></span>
+                <span>仓位 <b id="positionWeight">—</b></span>
+              </div>
+              <div class="position-ai">
+                <div class="position-ai-head">
+                  <span class="ai-mini">AI</span>
+                  <b id="positionAction">—</b>
+                  <em id="positionConfidence">—</em>
+                </div>
+                <p id="positionAdvice">—</p>
+                <div class="position-kpis">
+                  <div><span>浮动盈亏</span><b id="positionPnl">—</b></div>
+                  <div><span>持仓市值</span><b id="positionValue">—</b></div>
+                  <div><span>风险敞口</span><b id="positionRisk">—</b></div>
+                </div>
+                <p class="position-plan" id="positionPlan">—</p>
+                <p class="position-risk" id="positionRiskNote">—</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="quant-title"><span>AI 量化操作指导</span><em>MODEL POSITION</em></div>
+          <div class="quant-quick">
+            <div><span>参考仓位</span><b id="quantPosition">—</b></div>
+            <div><span>第一目标</span><b id="quantTarget">—</b></div>
+          </div>
+          <div class="quant-lines">
+            <p><span>触发</span><b id="quantTrigger">—</b></p>
+            <p><span>入场</span><b id="quantEntry">—</b></p>
+            <p><span>防守</span><b id="quantStop">—</b></p>
+          </div>
+          <p class="forecast-risk" id="forecastRisk">—</p>
+          <p class="forecast-disclaimer">量化估算，仅作信息参考，不构成投资建议。</p>
+        </section>
+
+        <section class="panel mini-consensus" aria-label="机构快照">
+          <div class="mini-panel-head">
+            <span>机构快照</span>
+            <svg class="icon"><use href="#i-building"/></svg>
+          </div>
+          <div class="mini-consensus-score">
+            <b id="miniConsensus">—</b>
+            <span>共识分</span>
+            <em id="miniConsensusLabel">—</em>
+          </div>
+          <div class="mini-consensus-rows">
+            <div><span>买入 / 增持</span><b id="miniPositive">—</b></div>
+            <div><span>目标价空间</span><b id="miniUpside">—</b></div>
+            <div><span>研报覆盖</span><b id="miniCoverage">—</b></div>
+          </div>
+          <a href="#institutions" class="mini-link">查看机构明细 <svg class="icon"><use href="#i-chevron-down"/></svg></a>
+        </section>
+
+        <section class="panel sources-card" aria-label="数据来源">
+          <div class="mini-panel-head">
+            <span>数据与方法</span>
+            <svg class="icon"><use href="#i-layers"/></svg>
+          </div>
+          <div class="source-list">
+            <div><i class="source-dot live"></i><span>实时行情</span><b id="srcQuote">东方财富</b></div>
+            <div><i class="source-dot live"></i><span>资金 / 研报 / 公告</span><b id="srcResearch">东方财富</b></div>
+            <div><i class="source-dot live"></i><span>外围市场</span><b id="srcGlobal">东方财富</b></div>
+            <div><i class="source-dot model"></i><span>综合研判</span><b>本地模型</b></div>
+          </div>
+          <p class="source-note"><svg class="icon"><use href="#i-clock"/></svg><span id="sourceFreshness">等待数据更新</span></p>
+        </section>
+      </aside>
+    </main>
+
+    <footer class="page-footer">
+      <div class="footer-brand">
+        <span class="brand-mark small"><svg><use href="#i-wave"/></svg></span>
+        <span>观澜投研 · 看见波动背后的逻辑</span>
+      </div>
+      <p>数据来自东方财富、腾讯、新浪公开接口，行情可能存在延时；AI 研判由本地多因子模型生成，不构成投资建议。</p>
+    </footer>
+  </div>
+
+  <!-- AI full analysis dialog -->
+  <dialog class="ai-dialog" id="aiDialog" aria-labelledby="aiDialogTitle">
+    <div class="dialog-inner">
+      <div class="dialog-head">
+        <div>
+          <p class="panel-kicker">FULL DIAGNOSTIC</p>
+          <h2 id="aiDialogTitle">完整 AI 研判</h2>
+        </div>
+        <button class="icon-button" id="closeDialogBtn" type="button" aria-label="关闭">
+          <svg class="icon"><use href="#i-close"/></svg>
+        </button>
+      </div>
+      <div class="dialog-body">
+        <div class="dialog-score">
+          <div><b id="dialogScore">—</b><span>综合评分</span></div>
+          <div><b id="dialogStance">—</b><span>模型观点</span></div>
+          <div><b id="dialogConfidence">—</b><span>置信度</span></div>
+        </div>
+        <div class="dialog-section">
+          <h3>因子拆解</h3>
+          <div class="factor-table" id="dialogFactors"></div>
+        </div>
+        <div class="dialog-section">
+          <h3>情景推演</h3>
+          <div class="scenario-list" id="dialogScenarios"></div>
+        </div>
+        <div class="dialog-section">
+          <h3>风险清单</h3>
+          <ul class="risk-list" id="dialogRisks"></ul>
+        </div>
+        <p class="dialog-disclaimer">本研判由本地多因子模型自动生成，仅用于信息参考，不构成任何投资建议。数据可能存在延时。</p>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Position input dialog -->
+  <dialog class="position-dialog" id="positionDialog" aria-labelledby="positionDialogTitle">
+    <form class="position-form" id="positionForm">
+      <div class="position-dialog-head">
+        <div>
+          <p class="panel-kicker">POSITION INPUT</p>
+          <h2 id="positionDialogTitle">录入我的持仓</h2>
+        </div>
+        <button class="icon-button" id="positionCloseBtn" type="button" aria-label="关闭">
+          <svg class="icon"><use href="#i-close"/></svg>
+        </button>
+      </div>
+      <p class="position-dialog-tip">填写后，AI 会把成本、仓位、支撑压力与明日预判结合起来，给出持有 / 加仓 / 减仓 / 止盈止损建议。</p>
+      <div class="position-fields">
+        <label>
+          <span>持仓成本价（元）</span>
+          <input id="posCost" type="number" min="0.01" step="0.01" placeholder="例如 1280.00" required />
+        </label>
+        <label>
+          <span>持股数量（股）</span>
+          <input id="posShares" type="number" min="1" step="1" placeholder="例如 500" required />
+        </label>
+        <label class="full">
+          <span>总资金（元，可选，用于计算仓位）</span>
+          <input id="posCapital" type="number" min="0" step="1000" placeholder="例如 2000000" />
+        </label>
+      </div>
+      <p class="position-dialog-hint">不填总资金也可以生成持仓建议，但无法计算仓位占比。持仓数据仅保存在你的浏览器本地。</p>
+      <div class="position-dialog-actions">
+        <button class="position-clear" id="positionClearBtn" type="button">清空持仓</button>
+        <span class="position-action-spacer"></span>
+        <button class="position-cancel" id="positionCancelBtn" type="button">取消</button>
+        <button class="position-submit" type="submit">生成 AI 建议</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <div class="loading-bar" id="loadingBar"></div>
+
+  <script src="/vendor/echarts.min.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

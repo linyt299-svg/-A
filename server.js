@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const dns = require('node:dns');
+const crypto = require('node:crypto');
 const { URL } = require('node:url');
 
 // Some networks advertise broken IPv6 routes for Eastmoney; prefer IPv4.
@@ -60,6 +61,19 @@ const CACHE = new Map();
 const INFLIGHT = new Map();
 const DEFAULT_WATCHLIST = ['600519', '300750', '002594', '601318', '000858', '688981'];
 
+// The initial account is stored as one-way hashes. The plaintext password is
+// never shipped to the browser or kept in this repository.
+const AUTH_ACCOUNT_HASH = '86c935cfc206c3943810df82ff160f3d3d95e133268844c6da119d8ceb6a0397';
+const AUTH_PASSWORD_SALT = 'c9512fbe59a93d1c2a74c394fa736d57';
+const AUTH_PASSWORD_HASH = '92306e62802ec1f0c3ed419a2821ae8dbf9b5208735f998d032e9fec2def227ee1475b4f048d76dbdad90ebcc653b4c707421434e78bb1837f506219e84c1186';
+const AUTH_COOKIE = 'stocklens_session';
+const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const REMEMBER_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const AUTH_SESSIONS = new Map();
+const LOGIN_ATTEMPTS = new Map();
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_FAILURES = 5;
+
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -69,6 +83,12 @@ const MIME = {
   '.png': 'image/png',
   '.ico': 'image/x-icon',
   '.woff2': 'font/woff2',
+};
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'same-origin',
+  'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
 };
 
 // ---------------------------------------------------------------------------
@@ -142,6 +162,94 @@ function sum(values) {
 
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
+}
+
+function digest(value) {
+  return crypto.createHash('sha256').update(String(value), 'utf8').digest();
+}
+
+function safeEqual(actual, expected) {
+  const left = Buffer.isBuffer(actual) ? actual : Buffer.from(String(actual), 'hex');
+  const right = Buffer.isBuffer(expected) ? expected : Buffer.from(String(expected), 'hex');
+  return left.length === right.length && crypto.timingSafeEqual(left, right);
+}
+
+function parseCookies(req) {
+  return String(req.headers.cookie || '').split(';').reduce((cookies, part) => {
+    const separator = part.indexOf('=');
+    if (separator < 1) return cookies;
+    const key = part.slice(0, separator).trim();
+    const value = part.slice(separator + 1).trim();
+    try { cookies[key] = decodeURIComponent(value); } catch { cookies[key] = value; }
+    return cookies;
+  }, {});
+}
+
+function requestIsSecure(req) {
+  return Boolean(req.socket.encrypted) || String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https';
+}
+
+function sessionCookie(req, token, maxAgeSeconds) {
+  const parts = [
+    `${AUTH_COOKIE}=${encodeURIComponent(token)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${maxAgeSeconds}`,
+  ];
+  if (requestIsSecure(req)) parts.push('Secure');
+  return parts.join('; ');
+}
+
+function clearSessionCookie(req) {
+  return sessionCookie(req, '', 0);
+}
+
+function getSession(req) {
+  const token = parseCookies(req)[AUTH_COOKIE];
+  if (!token) return null;
+  const session = AUTH_SESSIONS.get(token);
+  if (!session) return null;
+  if (session.expiresAt <= Date.now()) {
+    AUTH_SESSIONS.delete(token);
+    return null;
+  }
+  return { token, ...session };
+}
+
+function createSession(remember) {
+  const token = crypto.randomBytes(32).toString('base64url');
+  const ttl = remember ? REMEMBER_TTL_MS : SESSION_TTL_MS;
+  AUTH_SESSIONS.set(token, { expiresAt: Date.now() + ttl });
+  return { token, ttl };
+}
+
+function clientKey(req) {
+  const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  return forwarded || req.socket.remoteAddress || 'unknown';
+}
+
+function activeLoginAttempt(req) {
+  const key = clientKey(req);
+  const attempt = LOGIN_ATTEMPTS.get(key);
+  if (!attempt || Date.now() - attempt.firstAt > LOGIN_WINDOW_MS) {
+    LOGIN_ATTEMPTS.delete(key);
+    return { key, count: 0, firstAt: Date.now() };
+  }
+  return { key, ...attempt };
+}
+
+function recordLoginFailure(attempt) {
+  LOGIN_ATTEMPTS.set(attempt.key, {
+    count: attempt.count + 1,
+    firstAt: attempt.count ? attempt.firstAt : Date.now(),
+  });
+}
+
+function verifyCredentials(account, password) {
+  const accountOk = safeEqual(digest(String(account).trim()), AUTH_ACCOUNT_HASH);
+  const candidate = crypto.scryptSync(String(password), Buffer.from(AUTH_PASSWORD_SALT, 'hex'), 64);
+  return accountOk && safeEqual(candidate, AUTH_PASSWORD_HASH);
 }
 
 function eastmoneyDate(d = new Date()) {
@@ -2835,6 +2943,7 @@ async function handleAiChat(req, res) {
 function json(res, status, body) {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
+    ...SECURITY_HEADERS,
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
     'Content-Length': Buffer.byteLength(payload),
@@ -2855,9 +2964,11 @@ async function serveStatic(req, res, pathname) {
     const finalPath = stat.isDirectory() ? path.join(resolved, 'index.html') : resolved;
     const data = await fsp.readFile(finalPath);
     const noCache = /\.(html|css|js)$/i.test(finalPath);
+    const isLoginAsset = /login\.(html|css|js)$/i.test(finalPath);
     res.writeHead(200, {
+      ...SECURITY_HEADERS,
       'Content-Type': MIME[path.extname(finalPath).toLowerCase()] || 'application/octet-stream',
-      'Cache-Control': noCache ? 'no-cache, must-revalidate' : 'public, max-age=86400',
+      'Cache-Control': isLoginAsset ? 'no-store' : noCache ? 'no-cache, must-revalidate' : 'public, max-age=86400',
       'Content-Length': data.length,
     });
     res.end(data);
@@ -3009,9 +3120,76 @@ async function handleSearch(url, res) {
   }
 }
 
+async function handleLogin(req, res) {
+  if (req.method !== 'POST') return json(res, 405, { error: '仅支持 POST 请求' });
+  const attempt = activeLoginAttempt(req);
+  if (attempt.count >= LOGIN_MAX_FAILURES) {
+    const retryAfter = Math.max(1, Math.ceil((LOGIN_WINDOW_MS - (Date.now() - attempt.firstAt)) / 1000));
+    res.setHeader('Retry-After', retryAfter);
+    return json(res, 429, { error: '尝试次数过多，请稍后再试' });
+  }
+
+  try {
+    const body = await readJsonBody(req, 16 * 1024);
+    const account = String(body.account || '').slice(0, 80);
+    const password = String(body.password || '').slice(0, 200);
+    if (!account || !password || !verifyCredentials(account, password)) {
+      recordLoginFailure(attempt);
+      return json(res, 401, { error: '账号或密码不正确' });
+    }
+
+    LOGIN_ATTEMPTS.delete(attempt.key);
+    const session = createSession(Boolean(body.remember));
+    res.setHeader('Set-Cookie', sessionCookie(req, session.token, Math.floor(session.ttl / 1000)));
+    return json(res, 200, { ok: true });
+  } catch (error) {
+    return json(res, /过大/.test(error.message) ? 413 : 400, { error: '登录请求无效' });
+  }
+}
+
+function handleLogout(req, res) {
+  if (req.method !== 'POST') return json(res, 405, { error: '仅支持 POST 请求' });
+  const session = getSession(req);
+  if (session) AUTH_SESSIONS.delete(session.token);
+  res.setHeader('Set-Cookie', clearSessionCookie(req));
+  return json(res, 200, { ok: true });
+}
+
+function redirect(res, location) {
+  res.writeHead(302, {
+    ...SECURITY_HEADERS,
+    Location: location,
+    'Cache-Control': 'no-store',
+    'Content-Length': 0,
+  });
+  res.end();
+}
+
+function unauthorized(res) {
+  return json(res, 401, { error: '登录状态已失效，请重新登录' });
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || `${HOST}:${PORT}`}`);
   try {
+    if (url.pathname === '/api/auth/login') return await handleLogin(req, res);
+    if (url.pathname === '/login' || url.pathname === '/login.html') {
+      if (getSession(req)) return redirect(res, '/');
+      return await serveStatic(req, res, '/login.html');
+    }
+    if (url.pathname === '/login.css' || url.pathname === '/login.js') {
+      return await serveStatic(req, res, url.pathname);
+    }
+
+    const session = getSession(req);
+    if (!session) {
+      if (url.pathname.startsWith('/api/')) return unauthorized(res);
+      const next = url.pathname === '/' ? '/' : `${url.pathname}${url.search}`;
+      return redirect(res, `/login?next=${encodeURIComponent(next)}`);
+    }
+
+    if (url.pathname === '/api/auth/logout') return handleLogout(req, res);
+    if (url.pathname === '/api/auth/session') return json(res, 200, { authenticated: true });
     if (url.pathname === '/api/ai/chat') return await handleAiChat(req, res);
     if (url.pathname === '/api/market-overview') return await handleMarketOverview(url, res);
     if (url.pathname === '/api/stock') return await handleStock(url, res);
@@ -3034,6 +3212,17 @@ const server = http.createServer(async (req, res) => {
     if (!res.headersSent) json(res, 500, { error: '服务器内部错误' });
   }
 });
+
+const authSweep = setInterval(() => {
+  const now = Date.now();
+  for (const [token, session] of AUTH_SESSIONS) {
+    if (session.expiresAt <= now) AUTH_SESSIONS.delete(token);
+  }
+  for (const [key, attempt] of LOGIN_ATTEMPTS) {
+    if (now - attempt.firstAt > LOGIN_WINDOW_MS) LOGIN_ATTEMPTS.delete(key);
+  }
+}, 30 * 60 * 1000);
+authSweep.unref();
 
 server.listen(PORT, HOST, () => {
   console.log(`\n  观澜投研 · StockLens`);

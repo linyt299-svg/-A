@@ -44,6 +44,7 @@
       <div class="topbar-divider"></div>
       <div class="clock-block"><strong id="clock">--:--:--</strong><small id="today">----</small></div>
       <button class="icon-button refresh-button" id="marketRefreshBtn" type="button" title="刷新市场数据" aria-label="刷新市场数据"><svg class="icon"><use href="#i-refresh"/></svg></button>
+      <button class="icon-button logout-button" type="button" data-logout title="退出登录" aria-label="退出登录"><svg class="icon" viewBox="0 0 24 24"><path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4M14 8l4 4-4 4M9 12h9"/></svg></button>
     </div>
   </header>
 
@@ -166,6 +167,7 @@
     </div>
   </div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="/auth-client.js"></script>
   <script src="/market.js" defer></script>
 </body>
 </html>

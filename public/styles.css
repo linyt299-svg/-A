@@ -473,6 +473,20 @@ b, strong {
   animation: spin 800ms linear infinite;
 }
 
+.logout-button {
+  color: var(--muted);
+}
+
+.logout-button:hover {
+  color: var(--up);
+  border-color: rgba(196, 83, 69, 0.5);
+}
+
+.logout-button.is-loading {
+  opacity: 0.55;
+  cursor: wait;
+}
+
 .profile-chip {
   display: flex;
   align-items: center;

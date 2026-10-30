@@ -74,14 +74,8 @@
 
   <nav class="section-nav" id="sectionNav" aria-label="页面章节">
     <div class="nav-links">
-      <a href="#overview" class="nav-link active">总览</a>
-      <a href="#conclusion" class="nav-link">结论</a>
-      <a href="#trend" class="nav-link">走势</a>
-      <a href="#technical" class="nav-link">技术面</a>
-      <a href="#flow" class="nav-link">资金面</a>
-      <a href="#institutions" class="nav-link">机构观点</a>
-      <a href="#announcements" class="nav-link">公告</a>
-      <a href="#global" class="nav-link">外围市场</a>
+      <a href="/market.html" class="nav-link market-entry-link">市场全景</a>
+      <a href="#overview" class="nav-link active">个股研究</a>
     </div>
     <div class="nav-meta">
       <span class="live-dot"></span>
@@ -155,9 +149,9 @@
                 </button>
               </div>
               <div class="stock-tags">
-                <span class="tag tag-ai" id="heroAiTag" role="button" tabindex="0" title="打开完整 AI 研判">
+                <span class="tag tag-ai" id="heroAiTag" role="button" tabindex="0" title="打开 AI 因子拆解">
                   <svg class="icon"><use href="#i-sparkles"/></svg>
-                  <span>AI 研判 · 加载中</span>
+                  <span>查看 AI 因子拆解</span>
                 </span>
                 <span class="tag" id="heroFlowTag" role="button" tabindex="0" title="跳转资金流向">资金 · —</span>
                 <span class="tag" id="heroReportTag" role="button" tabindex="0" title="跳转机构观点">机构 · —</span>
@@ -499,7 +493,7 @@
             </div>
           </div>
 
-          <p class="ai-summary" id="aiSummary">正在读取行情、资金、研报与外围市场数据，生成多因子研判…</p>
+          <p class="ai-summary" id="aiSummary">正在识别主要驱动与拖累因子…</p>
 
           <div class="ai-factors" id="aiFactors">
             <div class="ai-factor"><span>趋势结构</span><i><b style="width:0%"></b></i><em>—</em></div>
@@ -508,9 +502,9 @@
           </div>
 
           <div class="ai-levels" id="aiLevels">
-            <div><span>支撑</span><b>—</b></div>
-            <div><span>压力</span><b>—</b></div>
-            <div><span>风险位</span><b>—</b></div>
+            <div><span>有效因子</span><b>—</b></div>
+            <div><span>偏强因子</span><b>—</b></div>
+            <div><span>偏弱因子</span><b>—</b></div>
           </div>
 
           <button class="ai-detail-button" id="aiDetailBtn" type="button">
@@ -636,73 +630,68 @@
     </footer>
   </div>
 
-  <!-- Fixed A-share market overview (wide desktop) -->
-  <aside class="a-share-dock panel" id="aShareDock" aria-label="A股大盘概览">
-    <div class="a-share-dock-head">
+  <!-- Context-aware research copilot -->
+  <button class="copilot-toggle" id="copilotToggle" type="button" aria-controls="researchCopilot" aria-expanded="false">
+    <svg class="icon"><use href="#i-sparkles"/></svg>
+    <span>问 AI</span>
+  </button>
+
+  <aside class="research-copilot panel" id="researchCopilot" aria-label="AI 投研问答" aria-hidden="true">
+    <div
+      class="copilot-resizer"
+      id="copilotResizer"
+      role="separator"
+      aria-label="调整 AI 投研助手宽度"
+      aria-orientation="vertical"
+      aria-valuemin="20"
+      aria-valuemax="55"
+      aria-valuenow="35"
+      tabindex="0"
+      title="拖动调整宽度，双击恢复为 35%"
+    ><span aria-hidden="true"></span></div>
+    <div class="copilot-head">
+      <div class="copilot-title">
+        <span class="copilot-orb"><svg class="icon"><use href="#i-sparkles"/></svg></span>
+        <div>
+          <p class="panel-kicker">RESEARCH COPILOT</p>
+          <h2>AI 投研助手</h2>
+        </div>
+      </div>
+      <button class="copilot-close" id="copilotClose" type="button" aria-label="关闭 AI 助手">
+        <svg class="icon"><use href="#i-close"/></svg>
+      </button>
+    </div>
+
+    <div class="copilot-context">
+      <span><i></i><b id="copilotContextName">等待个股数据</b></span>
+      <em id="copilotContextTime">实时读取左侧页面</em>
+    </div>
+
+    <div class="copilot-messages" id="copilotMessages" role="log" aria-live="polite">
+      <article class="copilot-message assistant">
+        <span class="copilot-avatar">AI</span>
+        <div class="copilot-bubble">
+          <p>我会基于左侧当前股票的行情、走势、资金、研报与公告回答。发现疑点时，我会给出可核对的修正建议，确认后才修改页面。</p>
+        </div>
+      </article>
+    </div>
+
+    <div class="copilot-quick" id="copilotQuick">
+      <button type="button" data-question="总结这只股票当前最重要的三个信号">总结关键信号</button>
+      <button type="button" data-question="检查左侧页面的数据和结论是否存在矛盾或错误">检查页面错误</button>
+      <button type="button" data-question="结合资金、技术和机构观点，当前最大的风险是什么">分析主要风险</button>
+    </div>
+
+    <form class="copilot-composer" id="copilotForm">
+      <label for="copilotInput">基于当前页面提问</label>
       <div>
-        <p class="panel-kicker">A-SHARE PULSE</p>
-        <h2>A股大盘</h2>
+        <textarea id="copilotInput" rows="2" maxlength="1000" placeholder="例如：资金面和技术面是否一致？" required></textarea>
+        <button id="copilotSend" type="submit" aria-label="发送问题">
+          <svg class="icon"><use href="#i-arrow-up-right"/></svg>
+        </button>
       </div>
-      <span class="market-session-badge" id="aShareSession">加载中</span>
-    </div>
-
-    <div class="a-share-score-card">
-      <div class="a-share-score-ring" id="aShareScoreRing" style="--market-score:50;--market-ring:#b28039">
-        <div><b id="aShareScore">—</b><span>/ 100</span></div>
-      </div>
-      <div class="a-share-score-copy">
-        <span>大盘综合得分</span>
-        <b id="aShareVerdict">等待行情</b>
-        <small id="aShareAverage">全市场上涨占比 —</small>
-      </div>
-    </div>
-
-    <div class="a-share-dock-section">
-      <div class="a-share-section-title">
-        <span>主要指数</span>
-        <em>实时涨跌</em>
-      </div>
-      <div class="a-share-index-list" id="aShareIndexList">
-        <div class="a-share-index-skeleton"></div>
-        <div class="a-share-index-skeleton"></div>
-        <div class="a-share-index-skeleton"></div>
-        <div class="a-share-index-skeleton"></div>
-      </div>
-    </div>
-
-    <div class="a-share-breadth" id="aShareBreadth">
-      <div class="a-share-breadth-head">
-        <b>全市场涨跌家数</b>
-        <em>有效样本 — 只</em>
-      </div>
-      <div class="a-share-breadth-counts">
-        <span><small>收涨</small><b class="up">—</b></span>
-        <span><small>平盘</small><b>—</b></span>
-        <span><small>收跌</small><b class="down">—</b></span>
-      </div>
-      <i class="a-share-breadth-track"><b class="flat" style="width:100%"></b></i>
-      <div class="a-share-analysis neutral">
-        <span>量化研判</span>
-        <b>等待全市场行情</b>
-        <p>行情就绪后统计沪深京全市场上涨、下跌、平盘家数，并分析广度、中位数与指数背离。</p>
-        <small>口径：沪深京全市场 A 股，剔除停牌 / 无报价</small>
-      </div>
-    </div>
-
-    <div class="a-share-dock-section a-share-alert-section">
-      <div class="a-share-section-title">
-        <span>盘面异动</span>
-        <em id="aShareAlertCount">—</em>
-      </div>
-      <div class="a-share-alerts" id="aShareAlerts">
-        <p class="a-share-empty">正在扫描指数异动…</p>
-      </div>
-    </div>
-
-    <div class="a-share-dock-foot">
-      <span><i></i><b id="aShareUpdated">等待更新</b></span>
-      <em id="aShareSource">公开行情</em>
-    </div>
+      <p><span id="copilotMode">页面上下文已同步</span><em>Enter 发送 · Shift+Enter 换行</em></p>
+    </form>
   </aside>
 
   <!-- AI full analysis dialog -->

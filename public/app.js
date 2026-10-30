@@ -8,6 +8,26 @@
   const LAST_CODE_KEY = 'guanlan.lastCode.v1';
   const DEFAULT_WATCHLIST = ['600519', '300750', '002594', '601318', '000858', '688981'];
   const RANGE_COUNT = { '1M': 22, '3M': 66, '6M': 132, '1Y': 250 };
+  const CORRECTION_KEY_PREFIX = 'guanlan.ai-corrections.v1.';
+  const COPILOT_WIDTH_KEY = 'guanlan.copilot-width.v1';
+  const DEFAULT_COPILOT_RATIO = 0.35;
+  const COPILOT_EDITABLE_FIELDS = {
+    stockIndustry: { label: '所属行业', section: '个股总览' },
+    conclusionAdviceTitle: { label: 'AI 建议标题', section: '核心结论' },
+    conclusionAdviceText: { label: 'AI 建议正文', section: '核心结论' },
+    conclusionSupport: { label: '支撑位', section: '核心结论' },
+    conclusionResistance: { label: '压力位', section: '核心结论' },
+    conclusionTechTitle: { label: '技术结论标题', section: '技术面' },
+    conclusionTechText: { label: '技术结论正文', section: '技术面' },
+    conclusionFlowTitle: { label: '资金结论标题', section: '资金面' },
+    conclusionFlowText: { label: '资金结论正文', section: '资金面' },
+    forecastBasis: { label: '明日预判依据', section: '明日预判' },
+    forecastNarrative: { label: '明日预判解读', section: '明日预判' },
+    quantTrigger: { label: '量化触发条件', section: '量化指导' },
+    quantEntry: { label: '量化入场方式', section: '量化指导' },
+    quantStop: { label: '量化防守条件', section: '量化指导' },
+    forecastRisk: { label: '风险提示', section: '量化指导' },
+  };
 
   const state = {
     code: normalizeCode(new URLSearchParams(location.search).get('code')) || localStorage.getItem(LAST_CODE_KEY) || '600519',
@@ -25,6 +45,9 @@
     searchTimer: null,
     toastTimer: null,
     autoTimer: null,
+    copilotHistory: [],
+    copilotBusy: false,
+    copilotSeq: 0,
   };
 
   // -------------------------------------------------------------------------
@@ -104,6 +127,24 @@
 
   function toneClass(value) {
     return value > 0 ? 'up' : value < 0 ? 'down' : 'neutral';
+  }
+
+  function aiDriverSummary(ai) {
+    const factors = Array.isArray(ai && ai.factors)
+      ? ai.factors.filter((factor) => Number.isFinite(Number(factor.score)))
+      : [];
+    if (!factors.length) return '因子数据仍在补充，暂不展开归因。';
+    const ranked = factors.slice().sort((a, b) => Number(b.score) - Number(a.score));
+    const strongest = ranked[0];
+    const weakest = ranked[ranked.length - 1];
+    if (strongest === weakest) return `${strongest.label}是当前主要信号，因子得分 ${strongest.score}。`;
+    return `主要驱动：${strongest.label} ${strongest.score} 分；主要拖累：${weakest.label} ${weakest.score} 分。`;
+  }
+
+  function aiActionTitle(ai) {
+    if (ai.stanceKey === 'bull' || ai.stanceKey === 'lean-bull') return '等待回踩或突破确认';
+    if (ai.stanceKey === 'bear' || ai.stanceKey === 'lean-bear') return '反弹留意压力，跌破优先防守';
+    return '区间内观望，等待方向选择';
   }
 
   function signClass(value) {
@@ -485,7 +526,9 @@
   async function loadStock(code, { refresh = false, silent = false } = {}) {
     const normalized = normalizeCode(code);
     if (!normalized) return;
+    const changedStock = state.code !== normalized;
     state.code = normalized;
+    if (changedStock) resetCopilotConversation();
     localStorage.setItem(LAST_CODE_KEY, normalized);
     state.positionAdvice = null;
     if ($('#positionDialog').open) closePositionDialog();
@@ -525,10 +568,11 @@
     renderInstitutions();
     renderAnnouncements();
     renderMarkets();
-    renderAShareDock();
     renderAi();
     renderSources();
     renderMeta();
+    applyStoredCorrections();
+    updateCopilotContext();
     updateStar();
     refreshWatchlist();
     $('#heroLoading').classList.add('is-hidden');
@@ -598,7 +642,7 @@
     const ai = state.data.ai;
     const flow = state.data.flow;
     const reports = state.data.reports;
-    $('#heroAiTag').innerHTML = `<svg class="icon"><use href="#i-sparkles"/></svg><span>AI 研判 · ${escapeHtml(ai.stance)} ${ai.composite}</span>`;
+    $('#heroAiTag').innerHTML = '<svg class="icon"><use href="#i-sparkles"/></svg><span>查看 AI 因子拆解</span>';
     $('#heroFlowTag').textContent = flow.historyAvailable
       ? `资金 · 5日${flow.sum5 >= 0 ? '净流入' : '净流出'} ${fmtMoney(Math.abs(flow.sum5))}`
       : `资金 · 今日${flow.today.main >= 0 ? '净流入' : '净流出'} ${fmtMoney(Math.abs(flow.today.main))}`;
@@ -635,10 +679,12 @@
     $('#conclusionScore').textContent = ai.composite;
     $('#conclusionStance').textContent = ai.stance;
     $('#conclusionConfidence').textContent = `置信度 ${ai.confidence}%`;
-    $('#conclusionAdviceTitle').textContent = c.ai ? c.ai.title : ai.stance;
+    $('#conclusionAdviceTitle').textContent = c.ai && c.ai.title && c.ai.title !== ai.stance
+      ? c.ai.title
+      : aiActionTitle(ai);
     $('#conclusionAdviceText').textContent = c.ai
       ? c.ai.text
-      : ai.summary;
+      : '结合支撑与压力观察量价确认，未触发条件前不追涨杀跌。';
     $('#conclusionSupport').textContent = fmtPrice(levels.support);
     $('#conclusionResistance').textContent = fmtPrice(levels.resistance);
     const supportGap = levels.supportGap != null
@@ -1357,137 +1403,430 @@
     $('#marketReadthrough').innerHTML = `<b>外围传导：${escapeHtml(risk.label || '数据暂缺')}</b> · ${escapeHtml(summary)}。关注美元与美债利率对成长股估值的压制。`;
   }
 
-  function renderAShareDock() {
-    const dock = $('#aShareDock');
-    if (!dock || !state.data) return;
-    const markets = state.data.markets || {};
-    const cnGroup = (markets.groups || []).find((group) => group.key === 'cn');
-    const indices = (markets.aShare && markets.aShare.indices) || (cnGroup && cnGroup.items) || [];
-    const valid = indices.filter((item) => Number.isFinite(Number(item.pct)));
-    const derivedUp = valid.filter((item) => Number(item.pct) > 0).length;
-    const derivedDown = valid.filter((item) => Number(item.pct) < 0).length;
-    const average = valid.length ? valid.reduce((sum, item) => sum + Number(item.pct), 0) / valid.length : 0;
-    const market = markets.aShare || {
-      score: clamp(Math.round(50 + average * 11 + ((derivedUp - derivedDown) / Math.max(1, valid.length)) * 7), 0, 100),
-      label: average >= 0.7 ? '偏强' : average <= -0.7 ? '偏弱' : '震荡',
-      tone: average > 0.15 ? 'up' : average < -0.15 ? 'down' : 'neutral',
-      average,
-      up: derivedUp,
-      down: derivedDown,
-      flat: Math.max(0, valid.length - derivedUp - derivedDown),
-      sampleSize: valid.length,
-      validCount: valid.length,
-      upRatio: valid.length ? Math.round((derivedUp / valid.length) * 100) : null,
-      median: null,
-      dataSource: 'indices',
-      analysis: {
-        headline: '指数样本 · 非全市场',
-        detail: `全市场涨跌家数暂不可用，当前仅展示 ${valid.length} 个主要指数。`,
-        tone: 'neutral',
-        methodology: '全市场数据暂不可用，暂以主要指数样本展示，不代表全市场个股涨跌家数',
-      },
-      anomalies: [],
-    };
-    const score = Number.isFinite(Number(market.score)) ? Number(market.score) : 50;
-    const tone = market.tone === 'up' ? 'up' : market.tone === 'down' ? 'down' : 'neutral';
-    const ring = tone === 'up' ? '#c45345' : tone === 'down' ? '#23826a' : '#b28039';
-    const status = state.data.status || {};
+  // -------------------------------------------------------------------------
+  // Context-aware research copilot
+  // -------------------------------------------------------------------------
 
-    $('#aShareSession').textContent = status.label || '沪深市场';
-    $('#aShareSession').className = `market-session-badge ${status.state === 'open' ? 'is-open' : status.state === 'break' ? 'is-break' : 'is-closed'}`;
-    $('#aShareScoreRing').style.setProperty('--market-score', clamp(score, 0, 100));
-    $('#aShareScoreRing').style.setProperty('--market-ring', ring);
-    $('#aShareScore').textContent = Math.round(score);
-    $('#aShareVerdict').textContent = market.label || '震荡';
-    $('#aShareVerdict').className = tone;
-    $('#aShareAverage').textContent = market.upRatio != null && market.median != null
-      ? `上涨 ${Math.round(market.upRatio)}% · 中位 ${Number(market.median).toFixed(1)}%`
-      : `指数平均涨跌 ${fmtPct(market.average)}`;
+  function correctionStorageKey(code) {
+    return `${CORRECTION_KEY_PREFIX}${code}`;
+  }
 
-    $('#aShareIndexList').innerHTML = indices.length
-      ? indices.map((item) => `
-        <div class="a-share-index-row">
-          <span><b>${escapeHtml(item.name)}</b><small>${escapeHtml(item.code)}</small></span>
-          <span class="a-share-index-value"><b>${item.value != null ? fmtPrice(item.value) : '—'}</b><em class="${toneClass(Number(item.pct))}">${fmtPct(item.pct)}</em></span>
-        </div>`).join('')
-      : '<p class="a-share-empty">大盘指数暂不可用</p>';
-
-    const up = Number.isFinite(Number(market.up)) ? Number(market.up) : derivedUp;
-    const down = Number.isFinite(Number(market.down)) ? Number(market.down) : derivedDown;
-    const flat = Number.isFinite(Number(market.flat)) ? Number(market.flat) : Math.max(0, valid.length - up - down);
-    const sampleSize = Number.isFinite(Number(market.sampleSize)) ? Number(market.sampleSize) : indices.length;
-    const validCount = Number.isFinite(Number(market.validCount)) ? Number(market.validCount) : valid.length;
-    const breadthTotal = Math.max(1, validCount);
-    const analysisTone = market.analysis && ['up', 'down', 'neutral'].includes(market.analysis.tone)
-      ? market.analysis.tone
-      : tone;
-    const allUp = validCount >= 3 && up === validCount;
-    const allDown = validCount >= 3 && down === validCount;
-    const fallbackHeadline = allUp
-      ? '全线收涨 · 强势共振'
-      : allDown
-        ? '全线收跌 · 弱势共振'
-        : up > down
-          ? '涨多跌少'
-          : down > up ? '跌多涨少' : '方向分化';
-    const weightedAverage = Number.isFinite(Number(market.weightedAverage)) ? Number(market.weightedAverage) : average;
-    const analysisHeadline = market.analysis && market.analysis.headline ? market.analysis.headline : fallbackHeadline;
-    const analysisDetail = market.analysis && market.analysis.detail
-      ? market.analysis.detail
-      : `${validCount}个有效样本中${up}涨、${flat}平、${down}跌；加权涨跌${fmtPct(weightedAverage)}。`;
-    const methodology = market.analysis && market.analysis.methodology
-      ? market.analysis.methodology
-      : '全市场数据暂不可用，暂以主要指数样本展示，不代表全市场个股涨跌家数';
-    const isIndexSample = market.dataSource === 'indices' || sampleSize <= 4;
-    $('#aShareBreadth').innerHTML = `
-      <div class="a-share-breadth-head">
-        <b>${isIndexSample ? '指数样本（非全市场）' : '全市场涨跌家数'}</b>
-        <em>${isIndexSample ? '4 个主要指数' : `有效样本 ${validCount.toLocaleString('zh-CN')} 只`}</em>
-      </div>
-      <div class="a-share-breadth-counts">
-        <span><small>收涨</small><b class="up">${up}</b></span>
-        <span><small>平盘</small><b>${flat}</b></span>
-        <span><small>收跌</small><b class="down">${down}</b></span>
-      </div>
-      <i class="a-share-breadth-track">
-        <b class="up" style="width:${clamp((up / breadthTotal) * 100, 0, 100)}%"></b>
-        <b class="flat" style="width:${clamp((flat / breadthTotal) * 100, 0, 100)}%"></b>
-        <b class="down" style="width:${clamp((down / breadthTotal) * 100, 0, 100)}%"></b>
-      </i>
-      <div class="a-share-analysis ${analysisTone}">
-        <span>量化研判</span>
-        <b>${escapeHtml(analysisHeadline)}</b>
-        <p>${escapeHtml(analysisDetail)}</p>
-        <small>口径：${escapeHtml(methodology)}</small>
-      </div>`;
-
-    let anomalies = Array.isArray(market.anomalies) ? market.anomalies : [];
-    if (!anomalies.length && valid.length) {
-      anomalies = [...valid].sort((a, b) => Math.abs(Number(b.pct)) - Math.abs(Number(a.pct))).slice(0, 2).map((item) => ({
-        name: item.name,
-        pct: Number(item.pct),
-        tone: toneClass(Number(item.pct)),
-        level: Math.abs(Number(item.pct)) >= 1.5 ? '显著异动' : '盘面领先',
-        text: `${item.name}${Number(item.pct) >= 0 ? '上行' : '下行'} ${Math.abs(Number(item.pct)).toFixed(2)}%`,
-      }));
+  function readStoredCorrections() {
+    try {
+      const value = JSON.parse(localStorage.getItem(correctionStorageKey(state.code)) || '{}');
+      return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    } catch {
+      return {};
     }
-    $('#aShareAlertCount').textContent = `${anomalies.length} 条`;
-    $('#aShareAlerts').innerHTML = anomalies.length
-      ? anomalies.slice(0, 3).map((item) => `
-        <div class="a-share-alert ${escapeHtml(item.tone || 'neutral')}">
-          <i></i>
-          <span><b>${escapeHtml(item.level || '盘面异动')}</b><small>${escapeHtml(item.text || item.name || '—')}</small></span>
-          <em>${item.value != null ? escapeHtml(item.value) : item.pct != null ? fmtPct(item.pct) : '—'}</em>
-        </div>`).join('')
-      : '<p class="a-share-empty">当前未发现明显异动</p>';
+  }
 
-    const updated = new Date(state.data.generatedAt);
-    $('#aShareUpdated').textContent = Number.isNaN(updated.getTime())
-      ? '更新时间 —'
-      : `更新 ${updated.toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false, hour: '2-digit', minute: '2-digit' })}`;
-    $('#aShareSource').textContent = isIndexSample
-      ? '指数样本'
-      : (market.dataSource === 'sina' ? '新浪 · 全市场' : '全市场');
+  function saveStoredCorrections(value) {
+    localStorage.setItem(correctionStorageKey(state.code), JSON.stringify(value));
+  }
+
+  function applyStoredCorrections() {
+    const stored = readStoredCorrections();
+    Object.entries(COPILOT_EDITABLE_FIELDS).forEach(([targetId]) => {
+      const element = document.getElementById(targetId);
+      if (!element) return;
+      const correction = stored[targetId];
+      element.classList.toggle('ai-corrected', Boolean(correction));
+      if (correction && correction.value) {
+        element.textContent = correction.value;
+        element.title = `AI 建议修正 · ${correction.reason || '经用户确认'}`;
+      } else if (element.title && element.title.startsWith('AI 建议修正')) {
+        element.removeAttribute('title');
+      }
+    });
+  }
+
+  function applyCopilotCorrection(correction, button) {
+    const meta = COPILOT_EDITABLE_FIELDS[correction.targetId];
+    const element = document.getElementById(correction.targetId);
+    if (!meta || !element) return;
+    const stored = readStoredCorrections();
+    if (stored[correction.targetId]) {
+      delete stored[correction.targetId];
+      saveStoredCorrections(stored);
+      renderAll();
+      button.textContent = '应用这项修正';
+      button.classList.remove('is-applied');
+      toast(`已撤销「${meta.label}」的修正`);
+      return;
+    }
+    stored[correction.targetId] = {
+      value: String(correction.suggestedValue || '').trim().slice(0, 500),
+      original: element.textContent.trim(),
+      reason: String(correction.reason || '').trim().slice(0, 300),
+      appliedAt: new Date().toISOString(),
+    };
+    saveStoredCorrections(stored);
+    applyStoredCorrections();
+    updateCopilotContext();
+    button.textContent = '已应用 · 点击撤销';
+    button.classList.add('is-applied');
+    toast(`已修正「${meta.label}」，刷新后仍会保留`);
+  }
+
+  function visibleSectionText(selector, maxLength = 4500) {
+    const element = $(selector);
+    if (!element) return '';
+    return element.innerText.replace(/\s+/g, ' ').trim().slice(0, maxLength);
+  }
+
+  function buildCopilotContext() {
+    const data = state.data || {};
+    const quote = data.quote || {};
+    const ai = data.ai || {};
+    const flow = data.flow || {};
+    const reports = data.reports || {};
+    const stored = readStoredCorrections();
+    const editableFields = Object.entries(COPILOT_EDITABLE_FIELDS).map(([targetId, meta]) => {
+      const element = document.getElementById(targetId);
+      return {
+        targetId,
+        label: meta.label,
+        section: meta.section,
+        currentValue: element ? element.textContent.trim().slice(0, 500) : '',
+        correctedByUser: Boolean(stored[targetId]),
+      };
+    });
+    return {
+      stock: {
+        code: quote.code,
+        name: quote.name,
+        market: quote.market,
+        industry: quote.industry,
+        region: quote.region,
+        price: quote.price,
+        change: quote.change,
+        changePct: quote.changePct,
+        open: quote.open,
+        high: quote.high,
+        low: quote.low,
+        prevClose: quote.prevClose,
+        turnover: quote.turnover,
+        volumeRatio: quote.volumeRatio,
+        pe: quote.pe,
+        pb: quote.pb,
+      },
+      generatedAt: data.generatedAt,
+      tradingDate: data.tradingDate,
+      stale: Boolean(data.stale),
+      status: data.status,
+      analysis: {
+        score: ai.composite,
+        stance: ai.stance,
+        confidence: ai.confidence,
+        summary: ai.summary,
+        levels: ai.levels,
+        conclusions: ai.conclusions,
+        factors: ai.factors,
+        forecast: ai.forecast,
+        risks: ai.risks,
+        scenarios: ai.scenarios,
+      },
+      technical: data.technical,
+      capitalFlow: {
+        date: flow.date,
+        signal: flow.signal,
+        tone: flow.tone,
+        today: flow.today,
+        sum5: flow.sum5,
+        sum10: flow.sum10,
+        historyAvailable: flow.historyAvailable,
+      },
+      institutions: {
+        count: reports.count,
+        orgCount: reports.orgCount,
+        positiveRatio: reports.positiveRatio,
+        targetPrice: reports.targetPrice,
+        targetUpside: reports.targetUpside,
+        consensusScore: reports.consensusScore,
+        latest: (reports.list || []).slice(0, 8),
+      },
+      announcements: ((data.announcements && data.announcements.list) || []).slice(0, 10),
+      marketRisk: data.markets && data.markets.risk,
+      visibleSections: {
+        '个股总览': visibleSectionText('#overview', 2000),
+        '核心结论': visibleSectionText('#conclusion'),
+        '近期走势': visibleSectionText('#trend', 2500),
+        '技术面': visibleSectionText('#technical'),
+        '资金面': visibleSectionText('#flow'),
+        '机构观点': visibleSectionText('#institutions'),
+        '公司公告': visibleSectionText('#announcements'),
+        '外围市场': visibleSectionText('#global', 2500),
+      },
+      editableFields,
+      appliedCorrections: stored,
+    };
+  }
+
+  function updateCopilotContext() {
+    if (!state.data) return;
+    const quote = state.data.quote || {};
+    const generated = new Date(state.data.generatedAt);
+    const storedCount = Object.keys(readStoredCorrections()).length;
+    $('#copilotContextName').textContent = `${quote.name || '当前个股'} ${quote.code || state.code}`;
+    $('#copilotContextTime').textContent = Number.isNaN(generated.getTime())
+      ? '页面已同步'
+      : `同步 ${generated.toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false, hour: '2-digit', minute: '2-digit' })}`;
+    $('#copilotMode').textContent = storedCount
+      ? `页面上下文已同步 · ${storedCount} 项修正`
+      : '页面上下文已同步';
+  }
+
+  function appendCopilotMessage(role, payload) {
+    const log = $('#copilotMessages');
+    const article = document.createElement('article');
+    article.className = `copilot-message ${role}`;
+    if (payload.loading) article.classList.add('is-loading');
+    if (role === 'assistant') {
+      const avatar = document.createElement('span');
+      avatar.className = 'copilot-avatar';
+      avatar.textContent = 'AI';
+      article.appendChild(avatar);
+    }
+    const bubble = document.createElement('div');
+    bubble.className = 'copilot-bubble';
+    const text = document.createElement('p');
+    text.textContent = payload.answer || '';
+    bubble.appendChild(text);
+
+    if (Array.isArray(payload.citations) && payload.citations.length) {
+      const citations = document.createElement('div');
+      citations.className = 'copilot-citations';
+      payload.citations.slice(0, 6).forEach((citation) => {
+        const chip = document.createElement('span');
+        chip.textContent = `依据 · ${citation}`;
+        citations.appendChild(chip);
+      });
+      bubble.appendChild(citations);
+    }
+
+    if (role === 'assistant' && Array.isArray(payload.corrections)) {
+      payload.corrections.slice(0, 4).forEach((correction) => {
+        const meta = COPILOT_EDITABLE_FIELDS[correction.targetId];
+        if (!meta || !correction.suggestedValue) return;
+        const card = document.createElement('div');
+        card.className = 'copilot-correction';
+        const label = document.createElement('span');
+        label.textContent = `建议修正 · ${meta.label}`;
+        const before = document.createElement('b');
+        before.textContent = `原：${correction.currentValue || document.getElementById(correction.targetId)?.textContent || '—'}`;
+        const after = document.createElement('em');
+        after.textContent = `改：${correction.suggestedValue}`;
+        const reason = document.createElement('small');
+        reason.textContent = correction.reason || '与页面其他数据存在不一致';
+        const button = document.createElement('button');
+        button.type = 'button';
+        const applied = Boolean(readStoredCorrections()[correction.targetId]);
+        button.textContent = applied ? '已应用 · 点击撤销' : '应用这项修正';
+        button.classList.toggle('is-applied', applied);
+        button.addEventListener('click', () => applyCopilotCorrection(correction, button));
+        card.append(label, before, after, reason, button);
+        bubble.appendChild(card);
+      });
+    }
+    article.appendChild(bubble);
+    log.appendChild(article);
+    log.scrollTop = log.scrollHeight;
+    return article;
+  }
+
+  function resetCopilotConversation() {
+    state.copilotSeq += 1;
+    state.copilotBusy = false;
+    state.copilotHistory = [];
+    const log = $('#copilotMessages');
+    if (!log) return;
+    $('#copilotSend').disabled = false;
+    log.innerHTML = '';
+    appendCopilotMessage('assistant', {
+      answer: '已切换个股。我会自动读取新页面的行情、走势、资金、研报与公告；发现疑点时会先给出修正建议。',
+    });
+  }
+
+  function setCopilotOpen(open) {
+    const panel = $('#researchCopilot');
+    panel.classList.toggle('is-open', open);
+    panel.setAttribute('aria-hidden', open ? 'false' : 'true');
+    $('#copilotToggle').setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) setTimeout(() => $('#copilotInput').focus(), 50);
+  }
+
+  function bindCopilotResize(wideMedia) {
+    const resizer = $('#copilotResizer');
+    const panel = $('#researchCopilot');
+    if (!resizer || !panel) return;
+
+    const widthBounds = () => ({
+      min: 360,
+      max: Math.max(360, Math.min(window.innerWidth * 0.55, window.innerWidth - 888)),
+    });
+    const updateAria = (width) => {
+      const bounds = widthBounds();
+      resizer.setAttribute('aria-valuemin', String(Math.round((bounds.min / window.innerWidth) * 100)));
+      resizer.setAttribute('aria-valuemax', String(Math.round((bounds.max / window.innerWidth) * 100)));
+      resizer.setAttribute('aria-valuenow', String(Math.round((width / window.innerWidth) * 100)));
+      resizer.setAttribute('aria-valuetext', `AI 投研助手占页面宽度 ${Math.round((width / window.innerWidth) * 100)}%`);
+    };
+    const setWidth = (requestedWidth, persist = false) => {
+      const bounds = widthBounds();
+      const width = clamp(requestedWidth, bounds.min, bounds.max);
+      document.documentElement.style.setProperty('--copilot-width', `${Math.round(width)}px`);
+      updateAria(width);
+      if (persist) {
+        try {
+          localStorage.setItem(COPILOT_WIDTH_KEY, String(width / window.innerWidth));
+        } catch (_) {
+          // 浏览器禁用本地存储时，拖拽仍然可以正常使用。
+        }
+      }
+      return width;
+    };
+    const storedRatio = (() => {
+      try {
+        const value = Number(localStorage.getItem(COPILOT_WIDTH_KEY));
+        return Number.isFinite(value) && value > 0 ? value : DEFAULT_COPILOT_RATIO;
+      } catch (_) {
+        return DEFAULT_COPILOT_RATIO;
+      }
+    })();
+    let currentRatio = storedRatio;
+    let dragging = false;
+
+    const applyRatio = () => {
+      if (!wideMedia.matches) return;
+      const width = setWidth(window.innerWidth * currentRatio);
+      currentRatio = width / window.innerWidth;
+    };
+    applyRatio();
+
+    resizer.addEventListener('pointerdown', (event) => {
+      if (!wideMedia.matches || event.button !== 0) return;
+      dragging = true;
+      resizer.setPointerCapture(event.pointerId);
+      document.body.classList.add('is-copilot-resizing');
+      event.preventDefault();
+    });
+    resizer.addEventListener('pointermove', (event) => {
+      if (!dragging) return;
+      const width = setWidth(window.innerWidth - event.clientX - 14);
+      currentRatio = width / window.innerWidth;
+    });
+    const finishResize = (event) => {
+      if (!dragging) return;
+      dragging = false;
+      document.body.classList.remove('is-copilot-resizing');
+      if (resizer.hasPointerCapture(event.pointerId)) resizer.releasePointerCapture(event.pointerId);
+      const width = panel.getBoundingClientRect().width;
+      currentRatio = width / window.innerWidth;
+      setWidth(width, true);
+    };
+    resizer.addEventListener('pointerup', finishResize);
+    resizer.addEventListener('pointercancel', finishResize);
+    resizer.addEventListener('dblclick', () => {
+      currentRatio = DEFAULT_COPILOT_RATIO;
+      setWidth(window.innerWidth * currentRatio, true);
+    });
+    resizer.addEventListener('keydown', (event) => {
+      if (!wideMedia.matches) return;
+      const bounds = widthBounds();
+      const currentWidth = panel.getBoundingClientRect().width;
+      const step = event.shiftKey ? 48 : 16;
+      let nextWidth = currentWidth;
+      if (event.key === 'ArrowLeft') nextWidth += step;
+      else if (event.key === 'ArrowRight') nextWidth -= step;
+      else if (event.key === 'Home') nextWidth = bounds.min;
+      else if (event.key === 'End') nextWidth = bounds.max;
+      else return;
+      event.preventDefault();
+      const width = setWidth(nextWidth, true);
+      currentRatio = width / window.innerWidth;
+    });
+    window.addEventListener('resize', applyRatio);
+  }
+
+  async function askCopilot(question) {
+    const cleanQuestion = String(question || '').trim();
+    if (!cleanQuestion || state.copilotBusy || !state.data) return;
+    setCopilotOpen(true);
+    appendCopilotMessage('user', { answer: cleanQuestion });
+    state.copilotHistory.push({ role: 'user', content: cleanQuestion });
+    const loading = appendCopilotMessage('assistant', { answer: '正在核对当前页面与数据…', loading: true });
+    const requestSeq = ++state.copilotSeq;
+    state.copilotBusy = true;
+    $('#copilotSend').disabled = true;
+    try {
+      const response = await fetch('/api/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: cleanQuestion,
+          messages: state.copilotHistory.slice(-8),
+          context: buildCopilotContext(),
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'AI 服务暂时不可用');
+      if (requestSeq !== state.copilotSeq) return;
+      loading.remove();
+      appendCopilotMessage('assistant', payload);
+      state.copilotHistory.push({ role: 'assistant', content: payload.answer || '' });
+      state.copilotHistory = state.copilotHistory.slice(-10);
+      $('#copilotMode').textContent = payload.mode === 'cloud'
+        ? '云端模型 · 当前页面上下文'
+        : '本地分析 · 当前页面上下文';
+    } catch (error) {
+      if (requestSeq !== state.copilotSeq) return;
+      loading.remove();
+      appendCopilotMessage('assistant', { answer: `${error.message || 'AI 服务暂时不可用'}。你可以稍后重试，页面原有数据不会受影响。` });
+    } finally {
+      if (requestSeq === state.copilotSeq) {
+        state.copilotBusy = false;
+        $('#copilotSend').disabled = false;
+        $('#copilotInput').focus();
+      }
+    }
+  }
+
+  function bindCopilot() {
+    const wideMedia = window.matchMedia('(min-width: 1640px)');
+    bindCopilotResize(wideMedia);
+    const syncCopilotVisibility = () => {
+      const panel = $('#researchCopilot');
+      if (wideMedia.matches) {
+        panel.classList.remove('is-open');
+        panel.setAttribute('aria-hidden', 'false');
+        $('#copilotToggle').setAttribute('aria-expanded', 'true');
+      } else if (!panel.classList.contains('is-open')) {
+        panel.setAttribute('aria-hidden', 'true');
+        $('#copilotToggle').setAttribute('aria-expanded', 'false');
+      }
+    };
+    syncCopilotVisibility();
+    if (wideMedia.addEventListener) wideMedia.addEventListener('change', syncCopilotVisibility);
+    else if (wideMedia.addListener) wideMedia.addListener(syncCopilotVisibility);
+    $('#copilotToggle').addEventListener('click', () => setCopilotOpen(true));
+    $('#copilotClose').addEventListener('click', () => setCopilotOpen(false));
+    $('#copilotQuick').addEventListener('click', (event) => {
+      const button = event.target.closest('[data-question]');
+      if (button) askCopilot(button.dataset.question);
+    });
+    $('#copilotForm').addEventListener('submit', (event) => {
+      event.preventDefault();
+      const input = $('#copilotInput');
+      const question = input.value;
+      input.value = '';
+      askCopilot(question);
+    });
+    $('#copilotInput').addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        $('#copilotForm').requestSubmit();
+      }
+    });
   }
 
   function renderAi() {
@@ -1502,15 +1841,18 @@
     $('#aiStance').style.color = tone;
     $('#aiConfidence').textContent = `${ai.confidence}%`;
     $('#confidenceFill').style.width = `${ai.confidence}%`;
-    $('#aiSummary').textContent = ai.summary;
+    $('#aiSummary').textContent = aiDriverSummary(ai);
 
     const factors = ['trend', 'capital', 'institution'].map((key) => ai.factors.find((f) => f.key === key)).filter(Boolean);
     $('#aiFactors').innerHTML = factors.map((factor) => `
       <div class="ai-factor"><span>${escapeHtml(factor.label)}</span><i><b style="width:${clamp(factor.score, 2, 98)}%"></b></i><em>${factor.score}</em></div>`).join('');
+    const validFactors = (ai.factors || []).filter((factor) => Number.isFinite(Number(factor.score)));
+    const positiveFactors = validFactors.filter((factor) => Number(factor.score) >= 60).length;
+    const weakFactors = validFactors.filter((factor) => Number(factor.score) < 45).length;
     $('#aiLevels').innerHTML = `
-      <div><span>支撑</span><b>${fmtPrice(ai.levels.support)}</b></div>
-      <div><span>压力</span><b>${fmtPrice(ai.levels.resistance)}</b></div>
-      <div><span>风险位</span><b>${fmtPrice(ai.levels.invalidation)}</b></div>`;
+      <div><span>有效因子</span><b>${validFactors.length}</b></div>
+      <div><span>偏强因子</span><b>${positiveFactors}</b></div>
+      <div><span>偏弱因子</span><b>${weakFactors}</b></div>`;
 
     const r = state.data.reports;
     $('#miniConsensus').textContent = r.consensusScore ?? '—';
@@ -1580,19 +1922,20 @@
 
   function bindNavigation() {
     const links = $$('.nav-link');
-    const sections = links.map((link) => $(link.getAttribute('href'))).filter(Boolean);
+    const sectionLinks = links.filter((link) => link.getAttribute('href').startsWith('#'));
+    const sections = sectionLinks.map((link) => $(link.getAttribute('href'))).filter(Boolean);
     const observer = new IntersectionObserver((entries) => {
       entries.forEach((entry) => {
         if (!entry.isIntersecting) return;
-        links.forEach((link) => link.classList.toggle('active', link.getAttribute('href') === `#${entry.target.id}`));
+        sectionLinks.forEach((link) => link.classList.toggle('active', link.getAttribute('href') === `#${entry.target.id}`));
       });
     }, { rootMargin: '-128px 0px -65% 0px', threshold: 0 });
 
     sections.forEach((section) => observer.observe(section));
 
-    links.forEach((link) => {
+    sectionLinks.forEach((link) => {
       link.addEventListener('click', () => {
-        links.forEach((l) => l.classList.toggle('active', l === link));
+        sectionLinks.forEach((l) => l.classList.toggle('active', l === link));
       });
     });
   }
@@ -1662,6 +2005,7 @@
 
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape' && $('#aiDialog').open) closeDialog();
+      if (event.key === 'Escape' && $('#researchCopilot').classList.contains('is-open')) setCopilotOpen(false);
     });
   }
 
@@ -1682,6 +2026,7 @@
     bindNavigation();
     bindControls();
     bindPosition();
+    bindCopilot();
     layoutAiCard();
     const layoutMedia = window.matchMedia('(max-width: 1120px)');
     if (layoutMedia.addEventListener) layoutMedia.addEventListener('change', layoutAiCard);

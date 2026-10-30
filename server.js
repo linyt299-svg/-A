@@ -13,8 +13,34 @@ dns.setDefaultResultOrder('ipv4first');
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const SNAPSHOT_DIR = path.join(ROOT, 'data', 'snapshots');
+
+// Load a gitignored `.env` file if present, so the AI Q&A can be configured
+// without exporting variables in every shell. Real environment variables win.
+(function loadDotEnv() {
+  let text = '';
+  try {
+    text = fs.readFileSync(path.join(ROOT, '.env'), 'utf8');
+  } catch {
+    return;
+  }
+  text.split(/\r?\n/).forEach((rawLine) => {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) return;
+    const eq = line.indexOf('=');
+    if (eq <= 0) return;
+    const key = line.slice(0, eq).trim();
+    let value = line.slice(eq + 1).trim();
+    if (!key) return;
+    value = value.replace(/^(['"])([\s\S]*)\1$/, '$2');
+    if (process.env[key] === undefined) process.env[key] = value;
+  });
+})();
+
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || '127.0.0.1';
+const AI_API_KEY = process.env.AI_API_KEY || process.env.OPENAI_API_KEY || '';
+const AI_BASE_URL = String(process.env.AI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
+const AI_MODEL = process.env.AI_MODEL || 'gpt-4o-mini';
 
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
@@ -713,6 +739,83 @@ async function fetchAShareBreadth() {
     median,
     source: 'sina',
   };
+}
+
+const A_SHARE_LIST_FILTER = 'm:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23';
+const MARKET_LIST_FIELDS = [
+  'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10', 'f12', 'f13', 'f14',
+  'f15', 'f16', 'f17', 'f18', 'f20', 'f21', 'f22', 'f24', 'f25', 'f62', 'f100',
+  'f104', 'f105', 'f128', 'f136', 'f140', 'f184',
+].join(',');
+
+async function fetchMarketList({ fs, fid = 'f3', size = 40, order = '1', retries = 1 }) {
+  const url =
+    `https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=${size}&po=${order}&np=1&fltt=2&invt=2` +
+    `&ut=fa5fd1943c7b386f172d6893dbfba10b&fid=${fid}&fs=${encodeURIComponent(fs)}&fields=${MARKET_LIST_FIELDS}`;
+  const json = await fetchJson(url, { retries, timeout: 10_000 });
+  const raw = json && json.data && json.data.diff;
+  const rows = Array.isArray(raw) ? raw : raw && typeof raw === 'object' ? Object.values(raw) : [];
+  if (!rows.length) throw new Error('No market list data');
+  return rows;
+}
+
+function mapMarketStock(item) {
+  const value = (field) => {
+    const n = Number(item && item[field]);
+    return Number.isFinite(n) ? n : null;
+  };
+  return {
+    code: String(item.f12 || ''),
+    name: String(item.f14 || '—'),
+    market: Number(item.f13) === 1 ? 'SH' : 'SZ',
+    price: value('f2'),
+    changePct: value('f3'),
+    change: value('f4'),
+    volume: value('f5'),
+    amount: value('f6'),
+    amplitude: value('f7'),
+    turnover: value('f8'),
+    pe: value('f9'),
+    volumeRatio: value('f10'),
+    high: value('f15'),
+    low: value('f16'),
+    open: value('f17'),
+    prevClose: value('f18'),
+    marketCap: value('f20'),
+    floatMarketCap: value('f21'),
+    speed: value('f22'),
+    change60d: value('f24'),
+    changeYtd: value('f25'),
+    mainNet: value('f62'),
+    mainNetPct: value('f184'),
+    industry: String(item.f100 || '—'),
+  };
+}
+
+async function fetchBoardList(type = 'industry', size = 12) {
+  const fs = type === 'concept' ? 'm:90+t:3' : 'm:90+t:2';
+  const rows = await fetchMarketList({ fs, fid: 'f3', size, retries: 1 });
+  return rows.map((item, index) => {
+    const up = num(item.f104);
+    const down = num(item.f105);
+    const breadth = up + down ? round((up / (up + down)) * 100, 0) : null;
+    const changePct = round(num(item.f3));
+    return {
+      rank: index + 1,
+      code: String(item.f12 || ''),
+      name: String(item.f14 || '—'),
+      changePct,
+      mainNet: Number.isFinite(Number(item.f62)) ? round(Number(item.f62), 0) : null,
+      up,
+      down,
+      breadth,
+      leader: String(item.f128 || '—'),
+      leaderCode: normalizeCode(item.f140),
+      leaderPct: Number.isFinite(Number(item.f136)) ? round(Number(item.f136)) : null,
+      heat: round(clamp(50 + changePct * 8 + (breadth == null ? 0 : (breadth - 50) * 0.35), 0, 100), 0),
+      type,
+    };
+  });
 }
 
 async function fetchTencentGlobal() {
@@ -1495,6 +1598,235 @@ function computeMarkets(groups, breadth) {
   };
 }
 
+function rankWeight(rank, size) {
+  if (!Number.isFinite(rank)) return 0;
+  return clamp(1 - rank / Math.max(size, 1), 0, 1);
+}
+
+function mergeMarketStockPools(pools) {
+  const merged = new Map();
+  pools.forEach(({ key, rows }) => {
+    rows.map(mapMarketStock).forEach((stock, index) => {
+      if (!stock.code || !stock.name || !Number.isFinite(stock.price) || stock.price <= 0) return;
+      const current = merged.get(stock.code) || stock;
+      current[`rank${key}`] = index;
+      merged.set(stock.code, current);
+    });
+  });
+  return Array.from(merged.values());
+}
+
+function stockClosePosition(stock) {
+  if (![stock.price, stock.low, stock.high].every(Number.isFinite) || stock.high <= stock.low) return 50;
+  return round(clamp(((stock.price - stock.low) / (stock.high - stock.low)) * 100, 0, 100), 0);
+}
+
+function buildStockReasons(stock, mode) {
+  const reasons = [];
+  const closePosition = stockClosePosition(stock);
+  if (stock.mainNetPct != null && stock.mainNetPct >= 3) reasons.push(`主力净流入占比 ${round(stock.mainNetPct)}%`);
+  else if (stock.mainNet != null && stock.mainNet > 0) reasons.push('主力资金净流入');
+  if (stock.volumeRatio != null && stock.volumeRatio >= 1.3) reasons.push(`量比 ${round(stock.volumeRatio)}`);
+  if (closePosition >= 75) reasons.push(`收于日内高位 ${closePosition}%`);
+  if (stock.turnover != null && stock.turnover >= 3) reasons.push(`换手 ${round(stock.turnover)}%`);
+  if (mode === 'intraday' && stock.speed != null && stock.speed > 0.2) reasons.push(`短线涨速 +${round(stock.speed)}%`);
+  if (stock.industry && stock.industry !== '—') reasons.push(stock.industry);
+  return reasons.slice(0, 3);
+}
+
+function scoreMarketStocks(stocks) {
+  const tradable = stocks.filter((stock) =>
+    !/ST|退/.test(stock.name) &&
+    Number.isFinite(stock.price) && stock.price > 0 &&
+    Number.isFinite(stock.changePct) &&
+    Number.isFinite(stock.amount) && stock.amount >= 30_000_000,
+  );
+
+  const hot = tradable.map((stock) => {
+    const amountRank = rankWeight(stock.rankAmount, 55);
+    const flowRank = rankWeight(stock.rankFlow, 55);
+    const gainRank = rankWeight(stock.rankGain, 55);
+    const activity = clamp(num(stock.turnover) / 12, 0, 1);
+    const volume = clamp((num(stock.volumeRatio) - 0.7) / 2.3, 0, 1);
+    const score = round(clamp(
+      amountRank * 34 + flowRank * 24 + gainRank * 12 + activity * 18 + volume * 12,
+      0,
+      100,
+    ), 0);
+    return {
+      ...stock,
+      score,
+      closePosition: stockClosePosition(stock),
+      reasons: buildStockReasons(stock, 'hot'),
+    };
+  }).sort((a, b) => b.score - a.score).slice(0, 12);
+
+  const candidates = tradable.filter((stock) => stock.changePct >= 0.4 && stock.changePct < 9.7);
+  const intraday = candidates.map((stock) => {
+    const closePosition = stockClosePosition(stock);
+    const priceMomentum = clamp((stock.changePct - 0.4) / 6.6, 0, 1);
+    const speed = clamp((num(stock.speed) + 0.15) / 1.5, 0, 1);
+    const turnover = clamp(num(stock.turnover) / 12, 0, 1);
+    const volume = clamp((num(stock.volumeRatio) - 0.8) / 2.2, 0, 1);
+    const flow = clamp((num(stock.mainNetPct) + 2) / 10, 0, 1);
+    const liquidity = rankWeight(stock.rankAmount, 55);
+    const score = round(clamp(
+      priceMomentum * 20 + speed * 13 + turnover * 13 + volume * 14 +
+      (closePosition / 100) * 17 + flow * 15 + liquidity * 8,
+      0,
+      100,
+    ), 0);
+    return {
+      ...stock,
+      score,
+      confidence: round(clamp(48 + score * 0.25, 52, 72), 0),
+      closePosition,
+      signal: score >= 72 ? '动能较强' : score >= 60 ? '偏强延续' : '等待确认',
+      risk: stock.changePct >= 7 || num(stock.turnover) >= 18 ? '高' : score >= 66 ? '中' : '中低',
+      invalidation: Number.isFinite(stock.open) ? `回落至开盘价 ${round(stock.open)} 下方` : '分时跌破均价线',
+      reasons: buildStockReasons(stock, 'intraday'),
+    };
+  }).filter((stock) => stock.score >= 52)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 6)
+    .map((stock, index) => ({ ...stock, rank: index + 1 }));
+
+  const tomorrow = candidates.map((stock) => {
+    const closePosition = stockClosePosition(stock);
+    const sweetMomentum = stock.changePct <= 6.5
+      ? clamp((stock.changePct - 0.4) / 4.6, 0, 1)
+      : clamp(1 - (stock.changePct - 6.5) / 3.2, 0, 1);
+    const turnover = clamp(num(stock.turnover) / 10, 0, 1);
+    const volume = clamp((num(stock.volumeRatio) - 0.8) / 2, 0, 1);
+    const flow = clamp((num(stock.mainNetPct) + 2) / 10, 0, 1);
+    const liquidity = rankWeight(stock.rankAmount, 55);
+    const score = round(clamp(
+      sweetMomentum * 18 + turnover * 13 + volume * 15 + flow * 24 +
+      (closePosition / 100) * 20 + liquidity * 10,
+      0,
+      100,
+    ), 0);
+    return {
+      ...stock,
+      score,
+      confidence: round(clamp(47 + score * 0.27, 52, 72), 0),
+      closePosition,
+      signal: score >= 72 ? '强势观察' : score >= 60 ? '结构偏强' : '等待确认',
+      risk: stock.changePct >= 7 || num(stock.turnover) >= 18 ? '高' : score >= 66 ? '中' : '中低',
+      invalidation: Number.isFinite(stock.low) ? `跌破当日低点 ${round(stock.low)}` : '低开后未能快速收复昨日收盘价',
+      reasons: buildStockReasons(stock, 'tomorrow'),
+    };
+  }).filter((stock) => stock.score >= 54 && num(stock.mainNet) >= 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 6)
+    .map((stock, index) => ({ ...stock, rank: index + 1 }));
+
+  return { hot, intraday, tomorrow };
+}
+
+async function buildMarketOverview({ refresh = false } = {}) {
+  const warnings = [];
+  const capture = async (label, promise, fallback) => {
+    try {
+      return await promise;
+    } catch (error) {
+      warnings.push(`${label}暂不可用`);
+      console.warn('[market-overview]', label, error.message);
+      return fallback;
+    }
+  };
+
+  const [marketsRaw, breadth, industries, concepts, amountRows, gainRows, flowRows] = await Promise.all([
+    capture('主要指数', cached('markets:all', 60_000, () => fetchMarkets({ retries: 0 }), { stale: refresh }), []),
+    capture('全市场涨跌家数', cached('aShare:breadth', 5 * 60_000, fetchAShareBreadth, { stale: refresh }), null),
+    capture('行业板块', cached('overview:industry', 90_000, () => fetchBoardList('industry', 14), { stale: refresh }), []),
+    capture('概念热点', cached('overview:concept', 90_000, () => fetchBoardList('concept', 14), { stale: refresh }), []),
+    capture('成交活跃股', cached('overview:stocks:amount', 60_000, () => fetchMarketList({ fs: A_SHARE_LIST_FILTER, fid: 'f6', size: 55, retries: 0 }), { stale: refresh }), []),
+    capture('涨幅活跃股', cached('overview:stocks:gain', 60_000, () => fetchMarketList({ fs: A_SHARE_LIST_FILTER, fid: 'f3', size: 55, retries: 0 }), { stale: refresh }), []),
+    capture('资金活跃股', cached('overview:stocks:flow', 60_000, () => fetchMarketList({ fs: A_SHARE_LIST_FILTER, fid: 'f62', size: 55, retries: 0 }), { stale: refresh }), []),
+  ]);
+
+  let marketGroups = Array.isArray(marketsRaw) ? marketsRaw : marketsRaw.groups;
+  if (!Array.isArray(marketGroups) || !marketGroups.length) {
+    const fallback = await capture('备用指数', composeFallbackMarkets(), { groups: [] });
+    marketGroups = Array.isArray(fallback) ? fallback : fallback.groups;
+  }
+  const markets = computeMarkets(Array.isArray(marketGroups) ? marketGroups : [], breadth);
+  const pool = mergeMarketStockPools([
+    { key: 'Amount', rows: amountRows },
+    { key: 'Gain', rows: gainRows },
+    { key: 'Flow', rows: flowRows },
+  ]);
+  const stocks = scoreMarketStocks(pool);
+  const topConcepts = concepts.slice(0, 3);
+  const topIndustries = industries.slice(0, 3);
+  const focusNames = topConcepts.map((item) => item.name);
+  const nextDay = nextTradingDayInfo();
+
+  return {
+    generatedAt: new Date().toISOString(),
+    tradingDate: eastmoneyDate(),
+    status: marketStatus(),
+    market: markets.aShare,
+    risk: markets.risk,
+    indices: markets.aShare.indices,
+    hotspots: concepts.slice(0, 10),
+    sectors: industries.slice(0, 12),
+    stocks,
+    pulse: {
+      headline: topConcepts.length ? `热点聚焦：${focusNames.join('、')}` : markets.aShare.analysis.headline,
+      summary: topConcepts.length
+        ? `${topConcepts[0].name}领涨概念方向，行业侧${topIndustries.map((item) => item.name).join('、') || '轮动较快'}相对活跃。`
+        : markets.aShare.analysis.detail,
+      rotation: concepts.length >= 6 && concepts[0].changePct - concepts[5].changePct < 1.5 ? '热点轮动' : '主线集中',
+      nextTradingDay: nextDay,
+    },
+    methodology: {
+      intraday: '当日涨幅、涨速、量比、换手、收盘位置、主力资金与流动性加权；用于观察日内动能延续。',
+      tomorrow: '收盘强度、温和涨幅、量价配合、主力净流入与流动性加权；最高置信度封顶 72%。',
+      disclaimer: '候选仅是公开行情的量化筛选结果，不代表确定走势，不构成投资建议。',
+      intradayRule: {
+        title: '日内趋势票 · 排名与得分规则',
+        rank: '在活跃股池（成交额 / 涨幅 / 资金三榜合并去重，约 165 只）内按综合得分从高到低排序，取前 6 名；得分相同按成交额排名（流动性）靠前者优先。',
+        score: '综合得分 = 当日涨幅×20% + 涨速×13% + 换手×13% + 量比×14% + 收盘位置×17% + 主力资金×15% + 流动性×8%（满分 100）',
+        factors: [
+          { label: '当日涨幅', weight: '20%', note: '（涨幅 − 0.4%）÷ 6.6 归一化，涨幅越高分越高' },
+          { label: '涨速', weight: '13%', note: '（涨速 + 0.15）÷ 1.5 归一化，反映短线上冲力度' },
+          { label: '换手率', weight: '13%', note: '换手率 ÷ 12 归一化，反映成交活跃度' },
+          { label: '量比', weight: '14%', note: '（量比 − 0.8）÷ 2.2 归一化，放量加分' },
+          { label: '收盘位置', weight: '17%', note: '（现价 − 最低）÷（最高 − 最低），收于日内高位加分' },
+          { label: '主力资金', weight: '15%', note: '（主力净流入占比 + 2）÷ 10 归一化，净流入加分' },
+          { label: '流动性', weight: '8%', note: '按成交额排名：1 − 排名 / 55，成交额越大分越高' },
+        ],
+        threshold: '入围门槛：当日涨幅 0.4%~9.7%、成交额 ≥ 3000 万、非 ST/退，且综合得分 ≥ 52',
+        confidence: '置信度 = 48 + 得分 × 0.25，落在 52%~72%',
+      },
+      tomorrowRule: {
+        title: '明日观察票 · 排名与得分规则',
+        rank: '在活跃股池内按综合得分从高到低排序，取前 6 名；得分相同按成交额排名（流动性）靠前者优先。',
+        score: '综合得分 = 温和涨幅×18% + 换手×13% + 量比×15% + 主力资金×24% + 收盘位置×20% + 流动性×10%（满分 100）',
+        factors: [
+          { label: '温和涨幅', weight: '18%', note: '涨幅 ≤ 6.5% 按（涨幅 − 0.4%）÷ 4.6，涨幅过高则递减，偏好温和上涨' },
+          { label: '换手率', weight: '13%', note: '换手率 ÷ 10 归一化，反映承接活跃度' },
+          { label: '量比', weight: '15%', note: '（量比 − 0.8）÷ 2 归一化，量价配合加分' },
+          { label: '主力资金', weight: '24%', note: '（主力净流入占比 + 2）÷ 10 归一化，权重最高' },
+          { label: '收盘位置', weight: '20%', note: '（现价 − 最低）÷（最高 − 最低），收于高位利于次日承接' },
+          { label: '流动性', weight: '10%', note: '按成交额排名：1 − 排名 / 55' },
+        ],
+        threshold: '入围门槛：当日涨幅 0.4%~9.7%、成交额 ≥ 3000 万、非 ST/退，综合得分 ≥ 54 且主力净额 ≥ 0',
+        confidence: '置信度 = 47 + 得分 × 0.27，落在 52%~72%',
+      },
+    },
+    coverage: {
+      stockPool: pool.length,
+      industryCount: industries.length,
+      conceptCount: concepts.length,
+      breadthSource: markets.aShare.dataSource,
+    },
+    warnings,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Price levels: always keep support below price and resistance above price.
 // A moving average or 20-day high on the wrong side of the last price is not a
@@ -2021,6 +2353,11 @@ function computeAi({ quote, technical, flow, reports, markets, rows }) {
     : stanceKey === 'bear' || stanceKey === 'lean-bear'
       ? `反弹至 ${fmtLevel(resistance)} 附近留意压力；若有效跌破 ${fmtLevel(invalidation)} 且成交放大，应优先控制回撤。`
       : `维持观望，等待 ${fmtLevel(support)}–${fmtLevel(resistance)} 区间选择方向；突破或跌破后再顺势应对。`;
+  const adviceTitle = stanceKey === 'bull' || stanceKey === 'lean-bull'
+    ? '等待回踩或突破确认'
+    : stanceKey === 'bear' || stanceKey === 'lean-bear'
+      ? '反弹留意压力，跌破优先防守'
+      : '区间内观望，等待方向选择';
 
   const techUp = technical.signals.filter((s) => s.tone === 'up').length;
   const techDown = technical.signals.filter((s) => s.tone === 'down').length;
@@ -2099,7 +2436,7 @@ function computeAi({ quote, technical, flow, reports, markets, rows }) {
     forecast,
     conclusions: {
       ai: {
-        title: stance,
+        title: adviceTitle,
         text: aiAdvice,
         confidence,
         score: composite,
@@ -2251,6 +2588,247 @@ async function buildStockPayload(code, { refresh = false } = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Context-aware AI research copilot
+// ---------------------------------------------------------------------------
+
+function readJsonBody(req, maxBytes = 256 * 1024) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    let body = '';
+    let tooLarge = false;
+    req.setEncoding('utf8');
+    req.on('data', (chunk) => {
+      size += Buffer.byteLength(chunk);
+      if (size > maxBytes) {
+        tooLarge = true;
+        return;
+      }
+      body += chunk;
+    });
+    req.on('end', () => {
+      if (tooLarge) return reject(new Error('请求内容过大'));
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch {
+        reject(new Error('请求 JSON 格式无效'));
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+function aiEndpoint() {
+  if (/\/chat\/completions$/i.test(AI_BASE_URL)) return AI_BASE_URL;
+  return `${AI_BASE_URL}/chat/completions`;
+}
+
+function parseAiJson(content) {
+  const text = String(content || '').trim();
+  if (!text) return null;
+  const unfenced = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+  try {
+    return JSON.parse(unfenced);
+  } catch {
+    const start = unfenced.indexOf('{');
+    const end = unfenced.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      try {
+        return JSON.parse(unfenced.slice(start, end + 1));
+      } catch {
+        return { answer: text };
+      }
+    }
+    return { answer: text };
+  }
+}
+
+function normalizeCopilotResult(result, context, mode = 'cloud') {
+  const editable = new Map(safeArray(context && context.editableFields).map((item) => [item.targetId, item]));
+  const allowedCitations = new Set(Object.keys(context && context.visibleSections || {}));
+  const corrections = safeArray(result && result.corrections).map((item) => {
+    const target = item && editable.get(String(item.targetId || ''));
+    const suggestedValue = String(item && item.suggestedValue || '').trim().slice(0, 500);
+    if (!target || !suggestedValue || suggestedValue === target.currentValue) return null;
+    return {
+      targetId: target.targetId,
+      currentValue: String(target.currentValue || '').slice(0, 500),
+      suggestedValue,
+      reason: String(item.reason || '与页面其他数据存在不一致').trim().slice(0, 300),
+      confidence: clamp(num(item.confidence, 70), 0, 100),
+    };
+  }).filter(Boolean).slice(0, 4);
+  return {
+    answer: String(result && result.answer || '当前上下文不足，暂时无法回答。').trim().slice(0, 6000),
+    citations: [...new Set(safeArray(result && result.citations)
+      .map((item) => String(item).trim())
+      .filter((item) => item && (!allowedCitations.size || allowedCitations.has(item))))].slice(0, 6),
+    corrections,
+    mode,
+  };
+}
+
+function auditCopilotContext(context) {
+  const issues = [];
+  const corrections = [];
+  const stock = context.stock || {};
+  const analysis = context.analysis || {};
+  const levels = analysis.levels || {};
+  const price = num(stock.price, NaN);
+  const high = num(stock.high, NaN);
+  const low = num(stock.low, NaN);
+  const editable = new Map(safeArray(context.editableFields).map((item) => [item.targetId, item]));
+  const isCorrected = (id) => Boolean(editable.get(id) && editable.get(id).correctedByUser);
+  const addCorrection = (targetId, suggestedValue, reason, confidence = 90) => {
+    const field = editable.get(targetId);
+    if (!field || isCorrected(targetId) || !suggestedValue || String(field.currentValue) === String(suggestedValue)) return;
+    corrections.push({ targetId, suggestedValue: String(suggestedValue), reason, confidence });
+  };
+
+  if (Number.isFinite(high) && Number.isFinite(low) && high < low) {
+    issues.push(`行情字段矛盾：最高价 ${high} 低于最低价 ${low}，建议刷新数据源后再判断。`);
+  }
+  if (Number.isFinite(price) && Number.isFinite(num(levels.support, NaN)) && num(levels.support) >= price) {
+    const fallback = Number.isFinite(low) && low < price ? low : price * 0.97;
+    issues.push(`支撑位 ${levels.support} 不在现价 ${price} 下方，方向关系异常。`);
+    addCorrection('conclusionSupport', fallback.toFixed(2), '支撑位应位于现价下方；暂以当日低点或现价下方 3% 作为展示层修正。', 82);
+  }
+  if (Number.isFinite(price) && Number.isFinite(num(levels.resistance, NaN)) && num(levels.resistance) <= price) {
+    const fallback = Number.isFinite(high) && high > price ? high : price * 1.03;
+    issues.push(`压力位 ${levels.resistance} 不在现价 ${price} 上方，方向关系异常。`);
+    addCorrection('conclusionResistance', fallback.toFixed(2), '压力位应位于现价上方；暂以当日高点或现价上方 3% 作为展示层修正。', 82);
+  }
+
+  const supportField = editable.get('conclusionSupport');
+  if (supportField && Number.isFinite(num(levels.support, NaN)) && !isCorrected('conclusionSupport')) {
+    const expected = Number(levels.support).toFixed(2);
+    if (String(supportField.currentValue).replace(/,/g, '') !== expected) {
+      issues.push('页面显示的支撑位与当前分析对象中的支撑位不一致。');
+      addCorrection('conclusionSupport', expected, '同步为当前结构化分析中的支撑位。', 98);
+    }
+  }
+  const resistanceField = editable.get('conclusionResistance');
+  if (resistanceField && Number.isFinite(num(levels.resistance, NaN)) && !isCorrected('conclusionResistance')) {
+    const expected = Number(levels.resistance).toFixed(2);
+    if (String(resistanceField.currentValue).replace(/,/g, '') !== expected) {
+      issues.push('页面显示的压力位与当前分析对象中的压力位不一致。');
+      addCorrection('conclusionResistance', expected, '同步为当前结构化分析中的压力位。', 98);
+    }
+  }
+
+  const probs = analysis.forecast && analysis.forecast.probabilities;
+  if (probs) {
+    const sum = num(probs.up) + num(probs.flat) + num(probs.down);
+    if (Math.abs(sum - 100) > 1) issues.push(`明日预判三项概率合计为 ${sum.toFixed(1)}%，不是 100%。`);
+  }
+  if (context.stale) issues.push('当前使用的是历史快照，结论可能落后于最新行情。');
+  return { issues, corrections };
+}
+
+function localCopilotAnswer(question, context) {
+  const q = String(question || '');
+  const stock = context.stock || {};
+  const analysis = context.analysis || {};
+  const flow = context.capitalFlow || {};
+  const institutions = context.institutions || {};
+  const audit = auditCopilotContext(context);
+  const name = `${stock.name || '当前股票'}（${stock.code || '—'}）`;
+  let answer = '';
+  let citations = [];
+
+  if (/错误|矛盾|检查|纠错|修正|有问题/.test(q)) {
+    answer = audit.issues.length
+      ? `我检查了当前页面，发现 ${audit.issues.length} 个需要核对的问题：\n${audit.issues.map((item, index) => `${index + 1}. ${item}`).join('\n')}\n\n下方只会修改页面展示，不会改写上游行情源；请确认后再应用。`
+      : '已核对当前价与日内高低、支撑/压力方向、预测概率、数据时效及页面显示值，暂未发现明确的结构性矛盾。免费行情可能延时，关键决策仍建议对照公告和交易所数据。';
+    citations = ['个股总览', '核心结论', '明日预判'];
+  } else if (/资金|主力|流入|流出/.test(q)) {
+    answer = `${name}的资金信号为“${flow.signal || '暂无'}”。今日主力净额 ${fmtYi(flow.today && flow.today.main)}，${flow.historyAvailable ? `近 5 日累计 ${fmtYi(flow.sum5)}、近 10 日累计 ${fmtYi(flow.sum10)}` : '多日资金序列暂缺，当前只能参考当日结构'}。资金数据应与价格趋势交叉验证，单日净流入或净流出不能独立构成结论。`;
+    citations = ['资金面', '近期走势'];
+  } else if (/机构|研报|目标价|评级/.test(q)) {
+    answer = `${name}近一年共有 ${num(institutions.count)} 篇研报、${num(institutions.orgCount)} 家机构覆盖，买入/增持占比 ${institutions.positiveRatio == null ? '—' : `${institutions.positiveRatio}%`}，平均目标价 ${institutions.targetPrice == null ? '—' : institutions.targetPrice}。机构观点有发布时间与利益立场，目标价应结合当前价格和研报日期使用。`;
+    citations = ['机构观点'];
+  } else if (/支撑|压力|关键价|防守/.test(q)) {
+    const levels = analysis.levels || {};
+    answer = `${name}现价 ${stock.price ?? '—'}，页面给出的支撑位 ${levels.support ?? '—'}、压力位 ${levels.resistance ?? '—'}、风险位 ${levels.stop ?? '—'}。这些位置来自均线、区间高低点和波动率计算，是动态观察位，不是保证成交或止损有效的价格。`;
+    citations = ['个股总览', '核心结论', '近期走势'];
+  } else if (/风险|隐患|不利/.test(q)) {
+    const risks = safeArray(analysis.risks).slice(0, 4);
+    answer = risks.length
+      ? `${name}当前优先关注：\n${risks.map((item, index) => `${index + 1}. ${typeof item === 'string' ? item : item.text || item.label || JSON.stringify(item)}`).join('\n')}`
+      : `${name}当前没有完整风险清单。可重点核对资金持续性、关键支撑是否失守、最新公告以及机构预期是否下修。`;
+    citations = ['核心结论', '资金面', '公司公告'];
+  } else {
+    const levels = analysis.levels || {};
+    answer = `${name}当前综合评分 ${analysis.score ?? '—'}/100，模型观点为“${analysis.stance || '暂无'}”，置信度 ${analysis.confidence ?? '—'}%。${analysis.summary || ''}\n\n现价 ${stock.price ?? '—'}，涨跌幅 ${stock.changePct == null ? '—' : signed(stock.changePct) + '%'}；支撑 ${levels.support ?? '—'}，压力 ${levels.resistance ?? '—'}；资金信号“${flow.signal || '暂无'}”。`;
+    citations = ['个股总览', '核心结论', '资金面'];
+  }
+  return normalizeCopilotResult({ answer, citations, corrections: /错误|矛盾|检查|纠错|修正|有问题/.test(q) ? audit.corrections : [] }, context, 'local');
+}
+
+async function cloudCopilotAnswer(question, messages, context) {
+  const system = `你是“观澜投研”的页面内研究助手，拥有30年丰富的炒股经验。能基于当前页面的内容作为背景，给出你对这个股票的看法和建议。\n
+回答要求：\n
+1. 使用简体中文，先给结论，再给依据；明确区分事实、模型推断和不确定性。内容尽可能简单，不要长篇大论，要言简意赅。也要注意分段。\n 
+2. 引用 citations 时只能使用上下文 visibleSections 的章节名。\n
+3. 如果发现页面内部矛盾或明显错误，可以提出 corrections；只能使用 editableFields 中存在的 targetId，且修改应尽量小。原始行情数据、代码和现价不得修改。\n
+4. correction 只是建议，不得声称已经修改。没有足够证据时 corrections 必须为空。\n
+5. 如果用户有咨询，可以根据资金，走势，从短期操盘手角度出发，给出建议。\n
+只返回一个 JSON 对象，不要 Markdown 代码围栏，格式：{"answer":"...","citations":["核心结论"],"corrections":[{"targetId":"...","suggestedValue":"...","reason":"...","confidence":85}]}`;
+  const compactMessages = safeArray(messages).slice(-8).map((item) => ({
+    role: item.role === 'assistant' ? 'assistant' : 'user',
+    content: String(item.content || '').slice(0, 3000),
+  }));
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 45_000);
+  try {
+    const response = await fetch(aiEndpoint(), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${AI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: AI_MODEL,
+        messages: [
+          { role: 'system', content: system },
+          ...compactMessages.slice(0, -1),
+          { role: 'user', content: `问题：${String(question).slice(0, 1000)}\n\n当前页面上下文：\n${JSON.stringify(context)}` },
+        ],
+        temperature: 0.2,
+      }),
+      signal: controller.signal,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error && payload.error.message || `模型接口返回 ${response.status}`);
+    const content = payload.choices && payload.choices[0] && payload.choices[0].message && payload.choices[0].message.content;
+    return normalizeCopilotResult(parseAiJson(content), context, 'cloud');
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function handleAiChat(req, res) {
+  if (req.method !== 'POST') return json(res, 405, { error: '仅支持 POST 请求' });
+  try {
+    const body = await readJsonBody(req);
+    const question = String(body.question || '').trim().slice(0, 1000);
+    const context = body.context && typeof body.context === 'object' ? body.context : null;
+    if (!question) return json(res, 400, { error: '请输入问题' });
+    if (!context || !context.stock) return json(res, 400, { error: '缺少当前页面上下文' });
+    if (!AI_API_KEY) return json(res, 200, localCopilotAnswer(question, context));
+    try {
+      return json(res, 200, await cloudCopilotAnswer(question, body.messages, context));
+    } catch (error) {
+      console.error('[ai-chat]', error.message);
+      const fallback = localCopilotAnswer(question, context);
+      fallback.answer += '\n\n云端模型暂时不可用，本次已自动切换为本地页面分析。';
+      return json(res, 200, fallback);
+    }
+  } catch (error) {
+    return json(res, /过大/.test(error.message) ? 413 : 400, { error: error.message || '问答请求无效' });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // HTTP server
 // ---------------------------------------------------------------------------
 
@@ -2370,6 +2948,52 @@ async function handleStock(url, res) {
   }
 }
 
+async function handleMarketOverview(url, res) {
+  const refresh = url.searchParams.get('refresh') === '1';
+  try {
+    const payload = await buildMarketOverview({ refresh });
+    const snapshot = await readSnapshot('market-overview');
+    const staleSections = [];
+    if (snapshot) {
+      if (!payload.hotspots.length && safeArray(snapshot.hotspots).length) {
+        payload.hotspots = snapshot.hotspots;
+        payload.coverage.conceptCount = snapshot.coverage && snapshot.coverage.conceptCount || snapshot.hotspots.length;
+        staleSections.push('概念热点');
+      }
+      if (!payload.sectors.length && safeArray(snapshot.sectors).length) {
+        payload.sectors = snapshot.sectors;
+        payload.coverage.industryCount = snapshot.coverage && snapshot.coverage.industryCount || snapshot.sectors.length;
+        staleSections.push('行业板块');
+      }
+      ['hot', 'intraday', 'tomorrow'].forEach((key) => {
+        if (!safeArray(payload.stocks[key]).length && snapshot.stocks && safeArray(snapshot.stocks[key]).length) {
+          payload.stocks[key] = snapshot.stocks[key];
+          if (!staleSections.includes('活跃股票')) staleSections.push('活跃股票');
+        }
+      });
+      if (!payload.coverage.stockPool && snapshot.coverage && snapshot.coverage.stockPool) {
+        payload.coverage.stockPool = snapshot.coverage.stockPool;
+      }
+    }
+    if (staleSections.length) {
+      payload.staleSections = staleSections;
+      payload.warnings.push(`${staleSections.join('、')}使用最近成功快照`);
+    }
+    const hasLiveCore = payload.hotspots.length && payload.sectors.length && payload.stocks.hot.length && !staleSections.length;
+    if (hasLiveCore) await writeSnapshot('market-overview', payload);
+    return json(res, 200, payload);
+  } catch (error) {
+    console.error('[market-overview]', error.message);
+    const snapshot = await readSnapshot('market-overview');
+    if (snapshot) {
+      snapshot.stale = true;
+      snapshot.staleReason = '上游市场数据暂不可用，展示最近一次成功快照';
+      return json(res, 200, snapshot);
+    }
+    return json(res, 502, { error: '暂时无法获取大盘总览数据，请稍后重试' });
+  }
+}
+
 async function handleSearch(url, res) {
   const q = String(url.searchParams.get('q') || '').trim();
   if (!q) return json(res, 200, { items: [] });
@@ -2388,6 +3012,8 @@ async function handleSearch(url, res) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || `${HOST}:${PORT}`}`);
   try {
+    if (url.pathname === '/api/ai/chat') return await handleAiChat(req, res);
+    if (url.pathname === '/api/market-overview') return await handleMarketOverview(url, res);
     if (url.pathname === '/api/stock') return await handleStock(url, res);
     if (url.pathname === '/api/position-advice') return await handlePositionAdvice(url, res);
     if (url.pathname === '/api/watchlist') return await handleWatchlist(url, res);
@@ -2398,6 +3024,7 @@ const server = http.createServer(async (req, res) => {
         now: new Date().toISOString(),
         market: marketStatus(),
         cacheEntries: CACHE.size,
+        ai: { configured: Boolean(AI_API_KEY), model: AI_API_KEY ? AI_MODEL : 'local-fallback' },
       });
     }
     if (url.pathname.startsWith('/api/')) return json(res, 404, { error: 'API not found' });

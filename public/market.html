@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#f2efe6" />
+  <meta name="description" content="观澜投研市场全景：大盘温度、当前热点、板块强弱、热门股票与趋势候选。" />
+  <title>市场全景 · 观澜投研</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230d2b24'/%3E%3Cpath d='M12 40c6-12 12-12 18 0s12 12 22-2' stroke='%23d5e97a' stroke-width='4' fill='none' stroke-linecap='round'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body class="market-page">
+  <svg class="svg-sprite" aria-hidden="true">
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 6v5h-5"/><path d="M4 18v-5h5"/><path d="M6.1 9a7 7 0 0 1 11.2-2.3L20 11M4 13l2.7 4.3A7 7 0 0 0 17.9 15"/></symbol>
+    <symbol id="i-wave" viewBox="0 0 24 24"><path d="M2 14c3.2-6.5 6.3-6.5 9.5 0s6.3 6.5 10.5-1"/><path d="M2 8c3.2-6.5 6.3-6.5 9.5 0S17.8 14.5 22 7"/></symbol>
+    <symbol id="i-trend" viewBox="0 0 24 24"><path d="M3 17 9 11l4 4 7-8"/><path d="M15 7h5v5"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></symbol>
+    <symbol id="i-flame" viewBox="0 0 24 24"><path d="M12 22c4.4 0 8-3.2 8-8 0-3.5-2-6.4-5.2-9.5.1 2.5-1.2 4.1-2.5 5.1-.5-3-2.4-5.2-4.8-7.1.2 3.8-3.5 6.1-3.5 11.5 0 4.8 3.6 8 8 8Z"/><path d="M9 17c0-1.8 1.3-3 3-4.7.3 1.6 1.7 2.4 2 3.8.3 1.8-.8 3.4-2.5 3.4A2.5 2.5 0 0 1 9 17Z"/></symbol>
+    <symbol id="i-compass" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2 5-5 2 2-5z"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></symbol>
+    <symbol id="i-arrow-up-right" viewBox="0 0 24 24"><path d="M7 17 17 7M8 7h9v9"/></symbol>
+  </svg>
+
+  <div class="page-noise" aria-hidden="true"></div>
+  <div class="loading-bar" id="loadingBar"></div>
+
+  <header class="topbar" id="topbar">
+    <a class="brand" href="/market.html" aria-label="观澜投研市场全景">
+      <span class="brand-mark"><svg><use href="#i-wave"/></svg></span>
+      <span class="brand-copy"><strong>观澜投研</strong><small>GUANLAN RESEARCH</small></span>
+    </a>
+
+    <div class="search-shell" id="searchShell">
+      <svg class="icon search-icon"><use href="#i-search"/></svg>
+      <input id="stockSearch" type="text" placeholder="搜索股票，进入个股研究" autocomplete="off" spellcheck="false" aria-label="搜索股票" />
+      <kbd>/</kbd>
+      <div class="search-results" id="searchResults" hidden></div>
+    </div>
+
+    <div class="topbar-right">
+      <div class="market-state" id="marketState"><span class="status-dot"></span><span class="market-state-copy"><b>加载中</b><small>沪深市场</small></span></div>
+      <div class="topbar-divider"></div>
+      <div class="clock-block"><strong id="clock">--:--:--</strong><small id="today">----</small></div>
+      <button class="icon-button refresh-button" id="marketRefreshBtn" type="button" title="刷新市场数据" aria-label="刷新市场数据"><svg class="icon"><use href="#i-refresh"/></svg></button>
+    </div>
+  </header>
+
+  <nav class="section-nav market-nav" aria-label="市场全景导航">
+    <div class="nav-links">
+      <a href="#market-overview" class="nav-link active">市场全景</a>
+      <a href="/" class="nav-link">个股研究</a>
+    </div>
+    <div class="nav-meta"><span class="live-dot"></span><span>数据更新</span><time id="updateTime">--:--:--</time><span class="nav-sep"></span><span id="sourceLabel">东方财富 / 新浪公开数据</span></div>
+  </nav>
+
+  <main class="market-dashboard">
+    <section class="market-hero panel" id="market-overview">
+      <div class="market-hero-copy">
+        <p class="panel-kicker">MARKET PANORAMA</p>
+        <div class="market-title-row">
+          <div><h1>今天的市场，资金在往哪里走？</h1><p id="marketSummary">正在汇总全市场行情、热点与资金线索…</p></div>
+          <span class="market-session-badge" id="marketSession">加载中</span>
+        </div>
+        <div class="market-pulse-callout">
+          <span class="pulse-icon"><svg class="icon"><use href="#i-compass"/></svg></span>
+          <div><small id="rotationLabel">市场脉搏</small><strong id="pulseHeadline">等待市场数据</strong><p id="pulseDetail">—</p></div>
+        </div>
+      </div>
+
+      <div class="market-score-block">
+        <div class="market-score-orbit" id="marketScoreRing" style="--pulse-score:50;--pulse-color:#b28039">
+          <div><b id="marketScore">—</b><span>/ 100</span></div>
+        </div>
+        <strong id="marketVerdict">等待行情</strong>
+        <small>全市场温度</small>
+      </div>
+
+      <div class="breadth-board">
+        <div class="breadth-head"><span>涨跌广度</span><em id="breadthCoverage">全市场样本</em></div>
+        <div class="breadth-numbers">
+          <div><b class="up" id="breadthUp">—</b><span>上涨</span></div>
+          <div><b id="breadthFlat">—</b><span>平盘</span></div>
+          <div><b class="down" id="breadthDown">—</b><span>下跌</span></div>
+        </div>
+        <div class="breadth-meter" aria-label="全市场涨跌比例"><i class="up-segment" id="upSegment"></i><i class="flat-segment" id="flatSegment"></i><i class="down-segment" id="downSegment"></i></div>
+        <p id="breadthNote">个股中位数 —</p>
+      </div>
+
+      <div class="market-index-strip" id="indexStrip" aria-label="主要指数">
+        <div class="market-skeleton wide"></div><div class="market-skeleton wide"></div><div class="market-skeleton wide"></div><div class="market-skeleton wide"></div>
+      </div>
+    </section>
+
+    <div class="market-two-column">
+      <section class="market-section panel" id="hotspots">
+        <header class="market-section-head">
+          <div><p class="panel-kicker">LIVE THEMES</p><h2>当前热点</h2><p>概念涨幅、扩散度与领涨股交叉观察</p></div>
+          <span class="section-icon hot"><svg class="icon"><use href="#i-flame"/></svg></span>
+        </header>
+        <div class="hotspot-grid" id="hotspotGrid"><div class="market-empty">正在识别热点主线…</div></div>
+      </section>
+
+      <section class="market-section panel" id="sectors">
+        <header class="market-section-head">
+          <div><p class="panel-kicker">SECTOR MAP</p><h2>板块强弱</h2><p>行业涨幅与上涨家数扩散度</p></div>
+          <span class="section-icon"><svg class="icon"><use href="#i-layers"/></svg></span>
+        </header>
+        <div class="sector-list" id="sectorList"><div class="market-empty">正在加载行业板块…</div></div>
+      </section>
+    </div>
+
+    <section class="market-section panel" id="hot-stocks">
+      <header class="market-section-head stock-section-head">
+        <div><p class="panel-kicker">ATTENTION FLOW</p><h2>热门股票</h2><p>综合成交额、资金、涨幅、换手与量比，不等同于涨幅榜</p></div>
+        <div class="coverage-chip" id="stockCoverage">扫描 — 只活跃股</div>
+      </header>
+      <div class="market-table-wrap">
+        <table class="market-stock-table">
+          <thead><tr><th>热度</th><th>股票</th><th>现价</th><th>涨跌幅</th><th>成交额</th><th>换手</th><th>主力净流入</th><th>所属行业</th><th></th></tr></thead>
+          <tbody id="hotStockBody"><tr><td colspan="9"><div class="market-empty">正在汇总热门股票…</div></td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="market-section trend-pick-section panel" id="trend-picks">
+      <header class="market-section-head stock-section-head">
+        <div><p class="panel-kicker">QUANT WATCHLIST</p><h2>趋势候选</h2><p>把“今天强”和“明天可能延续”拆开判断，给出因子与失效条件</p></div>
+        <span class="model-badge">本地多因子 · 置信度 ≤ 72%</span>
+      </header>
+      <div class="trend-columns">
+        <article class="trend-column intraday-column">
+          <div class="trend-column-head"><div><span>01</span><h3>日内趋势票</h3><button class="trend-help" type="button" data-rule="intradayRule" aria-label="查看日内趋势票的排名与得分规则">?</button></div><p>关注当日动能是否仍在延续</p></div>
+          <div class="trend-card-list" id="intradayList"><div class="market-empty">正在计算日内动能…</div></div>
+        </article>
+        <article class="trend-column tomorrow-column">
+          <div class="trend-column-head"><div><span>02</span><h3 id="tomorrowTitle">明日观察票</h3><button class="trend-help" type="button" data-rule="tomorrowRule" aria-label="查看明日观察票的排名与得分规则">?</button></div><p>关注收盘结构与次日承接</p></div>
+          <div class="trend-card-list" id="tomorrowList"><div class="market-empty">正在计算明日结构…</div></div>
+        </article>
+      </div>
+      <div class="trend-method-row">
+        <p><svg class="icon"><use href="#i-info"/></svg><span id="trendMethod">模型会综合价格、量能、资金与流动性。</span></p>
+        <p id="trendDisclaimer">仅作信息参考，不构成投资建议。</p>
+      </div>
+    </section>
+
+    <section class="market-method panel">
+      <div><svg class="icon"><use href="#i-clock"/></svg><span>数据时效</span><b id="freshnessText">等待更新</b></div>
+      <div><svg class="icon"><use href="#i-layers"/></svg><span>覆盖范围</span><b id="coverageText">沪深 A 股</b></div>
+      <div><svg class="icon"><use href="#i-info"/></svg><span>降级状态</span><b id="warningText">实时数据加载中</b></div>
+    </section>
+  </main>
+
+  <footer class="page-footer market-footer">
+    <div class="footer-brand"><span class="brand-mark small"><svg><use href="#i-wave"/></svg></span><span>观澜投研 · 市场全景</span></div>
+    <p>行情与资金数据来自公开接口，可能存在延迟；趋势候选为量化筛选，不构成荐股或收益承诺。</p>
+  </footer>
+  <div class="rule-popover" id="rulePopover" role="dialog" aria-hidden="true">
+    <div class="rule-popover-card">
+      <div class="rule-popover-head">
+        <h4 id="rulePopoverTitle">计算规则</h4>
+        <button type="button" class="rule-popover-close" id="rulePopoverClose" aria-label="关闭">×</button>
+      </div>
+      <div class="rule-popover-body" id="rulePopoverBody"></div>
+    </div>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="/market.js" defer></script>
+</body>
+</html>

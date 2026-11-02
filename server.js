@@ -370,7 +370,7 @@ function cacheGet(key) {
   return hit.value;
 }
 
-async function cached(key, ttlMs, loader, { stale = false } = {}) {
+async function cached(key, ttlMs, loader, { stale = false, cacheWhen = () => true } = {}) {
   if (!stale) {
     const hit = cacheGet(key);
     if (hit) return hit;
@@ -379,7 +379,9 @@ async function cached(key, ttlMs, loader, { stale = false } = {}) {
   const task = (async () => {
     try {
       const value = await loader();
-      CACHE.set(key, { value, expires: Date.now() + ttlMs });
+      if (cacheWhen(value)) {
+        CACHE.set(key, { value, expires: Date.now() + ttlMs });
+      }
       return value;
     } finally {
       INFLIGHT.delete(key);
@@ -908,18 +910,54 @@ async function fetchSinaMarketList({ fid = 'f3', size = 40 }) {
   });
 }
 
+function incompleteMarketListFields(rows) {
+  const requiredNumericFields = ['f8', 'f10', 'f22', 'f62', 'f184'];
+  const threshold = Math.ceil(rows.length * 0.8);
+  const missing = requiredNumericFields.filter((field) => rows.filter((row) => {
+    const value = row && row[field];
+    return value !== null && value !== '' && value !== '-' && Number.isFinite(Number(value));
+  }).length < threshold);
+  const industryCount = rows.filter((row) => row && row.f100 && row.f100 !== '-').length;
+  if (industryCount < threshold) missing.push('f100');
+  return missing;
+}
+
 async function fetchMarketListResilient(options) {
   try {
-    return await fetchMarketList(options);
+    const rows = await fetchMarketList(options);
+    const missingFields = incompleteMarketListFields(rows);
+    return {
+      rows,
+      provider: 'eastmoney',
+      complete: missingFields.length === 0,
+      ranking: options.fid === 'f62' ? 'main-flow' : options.fid === 'f6' ? 'amount' : 'gain',
+      missingFields,
+    };
   } catch (eastmoneyError) {
     try {
       const rows = await fetchSinaMarketList(options);
       console.warn('[market-overview] Eastmoney list unavailable; using Sina fallback', options.fid, eastmoneyError.message);
-      return rows;
+      return {
+        rows,
+        provider: 'sina',
+        complete: false,
+        ranking: options.fid === 'f62' ? 'turnover' : 'approximate',
+        missingFields: ['f10', 'f22', 'f62', 'f184', 'f100'],
+      };
     } catch (sinaError) {
       throw new Error(`market lists unavailable (Eastmoney: ${eastmoneyError.message}; Sina: ${sinaError.message})`);
     }
   }
+}
+
+function unavailableMarketListResult(fid) {
+  return {
+    rows: [],
+    provider: 'unavailable',
+    complete: false,
+    ranking: fid === 'f62' ? 'main-flow' : fid === 'f6' ? 'amount' : 'gain',
+    missingFields: ['f10', 'f22', 'f62', 'f184', 'f100'],
+  };
 }
 
 function mapMarketStock(item) {
@@ -1802,7 +1840,8 @@ function scoreMarketStocks(stocks) {
     !/ST|退/.test(stock.name) &&
     Number.isFinite(stock.price) && stock.price > 0 &&
     Number.isFinite(stock.changePct) &&
-    Number.isFinite(stock.amount) && stock.amount >= 30_000_000,
+    Number.isFinite(stock.amount) && stock.amount >= 30_000_000 &&
+    [stock.turnover, stock.volumeRatio, stock.speed, stock.mainNetPct].every(Number.isFinite),
   );
 
   const hot = tradable.map((stock) => {
@@ -1878,11 +1917,130 @@ function scoreMarketStocks(stocks) {
       invalidation: Number.isFinite(stock.low) ? `跌破当日低点 ${round(stock.low)}` : '低开后未能快速收复昨日收盘价',
       reasons: buildStockReasons(stock, 'tomorrow'),
     };
-  }).filter((stock) => stock.score >= 54 && num(stock.mainNet) >= 0)
+  }).filter((stock) => stock.score >= 54 && Number.isFinite(stock.mainNet) && stock.mainNet >= 0)
     .sort((a, b) => b.score - a.score)
     .map((stock, index) => ({ ...stock, rank: index + 1 }));
 
   return { hot, intraday, tomorrow };
+}
+
+function buildStockRankings({ amount, gain, flow }) {
+  const lists = { amount, gain, flow };
+  const degraded = Object.entries(lists).filter(([, result]) => !result || result.complete !== true);
+  const complete = degraded.length === 0;
+  const provider = complete
+    ? 'eastmoney'
+    : degraded.some(([, result]) => result && result.provider === 'sina')
+      ? 'sina'
+      : degraded.some(([, result]) => result && result.provider === 'eastmoney') ? 'eastmoney' : 'unavailable';
+  const missingFields = [...new Set(degraded.flatMap(([, result]) => safeArray(result && result.missingFields)))];
+  const reason = complete
+    ? ''
+    : provider === 'sina'
+      ? '东方财富接口不可用，新浪数据缺少主力资金、量比和涨速'
+      : provider === 'eastmoney'
+        ? '东方财富股票榜关键字段不完整'
+        : '股票榜完整数据暂不可用';
+  const dataQuality = {
+    status: complete ? 'complete' : 'degraded',
+    complete,
+    provider,
+    reason,
+    missingFields,
+    lists: Object.fromEntries(Object.entries(lists).map(([key, result]) => [key, {
+      provider: result && result.provider || 'unavailable',
+      complete: result && result.complete === true,
+      ranking: result && result.ranking || 'unknown',
+      missingFields: safeArray(result && result.missingFields),
+    }])),
+  };
+
+  if (!complete) {
+    return { pool: [], stocks: { hot: [], intraday: [], tomorrow: [] }, dataQuality };
+  }
+
+  const pool = mergeMarketStockPools([
+    { key: 'Amount', rows: amount.rows },
+    { key: 'Gain', rows: gain.rows },
+    { key: 'Flow', rows: flow.rows },
+  ]);
+  return { pool, stocks: scoreMarketStocks(pool), dataQuality };
+}
+
+function isCompleteStockSnapshot(snapshot) {
+  if (!snapshot || !snapshot.stocks || !safeArray(snapshot.stocks.hot).length) return false;
+
+  const hasQualityMetadata = snapshot.snapshotVersion != null || snapshot.quality != null || snapshot.stockProvider != null;
+  if (hasQualityMetadata && !(
+    snapshot.snapshotVersion === 2 &&
+    snapshot.quality === 'complete' &&
+    snapshot.stockProvider === 'eastmoney' &&
+    snapshot.dataQuality && snapshot.dataQuality.stocks && snapshot.dataQuality.stocks.complete === true
+  )) return false;
+
+  const records = ['hot', 'intraday', 'tomorrow']
+    .flatMap((key) => safeArray(snapshot.stocks[key]));
+  if (!records.length) return false;
+  const required = ['turnover', 'volumeRatio', 'speed', 'mainNet', 'mainNetPct'];
+  const completeRecords = records.filter((stock) => required.every((field) => Number.isFinite(stock && stock[field])));
+  return completeRecords.length / records.length >= 0.8;
+}
+
+function restoreMarketOverviewSections(payload, snapshot) {
+  const staleSections = [];
+  payload.warnings = safeArray(payload.warnings);
+  payload.coverage = payload.coverage || {};
+
+  if (snapshot) {
+    if (!safeArray(payload.hotspots).length && safeArray(snapshot.hotspots).length) {
+      payload.hotspots = snapshot.hotspots;
+      payload.coverage.conceptCount = snapshot.coverage && snapshot.coverage.conceptCount || snapshot.hotspots.length;
+      staleSections.push('概念热点');
+    }
+    if (!safeArray(payload.sectors).length && safeArray(snapshot.sectors).length) {
+      payload.sectors = snapshot.sectors;
+      payload.coverage.industryCount = snapshot.coverage && snapshot.coverage.industryCount || snapshot.sectors.length;
+      staleSections.push('行业板块');
+    }
+  }
+
+  const stockQuality = payload.dataQuality && payload.dataQuality.stocks;
+  if (!stockQuality || stockQuality.complete !== true) {
+    if (isCompleteStockSnapshot(snapshot)) {
+      payload.stocks = snapshot.stocks;
+      payload.coverage.stockPool = snapshot.coverage && snapshot.coverage.stockPool || snapshot.stocks.hot.length;
+      payload.stockSnapshotAt = snapshot.generatedAt;
+      staleSections.push('活跃股票');
+      payload.warnings.push('股票榜数据源已降级，当前展示最近一次完整评分结果');
+    } else {
+      payload.stocks = { hot: [], intraday: [], tomorrow: [] };
+      payload.coverage.stockPool = 0;
+      payload.warnings.push('股票榜数据源已降级，且暂无可用的完整快照');
+    }
+  }
+
+  if (staleSections.length) payload.staleSections = staleSections;
+  return staleSections;
+}
+
+function canPersistMarketOverview(payload) {
+  return Boolean(
+    payload && payload.dataQuality && payload.dataQuality.stocks &&
+    payload.dataQuality.stocks.complete === true &&
+    safeArray(payload.hotspots).length > 0 &&
+    safeArray(payload.sectors).length > 0 &&
+    payload.stocks && safeArray(payload.stocks.hot).length > 0 &&
+    safeArray(payload.staleSections).length === 0
+  );
+}
+
+function completeMarketOverviewSnapshot(payload) {
+  return {
+    ...payload,
+    snapshotVersion: 2,
+    quality: 'complete',
+    stockProvider: 'eastmoney',
+  };
 }
 
 async function buildMarketOverview({ refresh = false } = {}) {
@@ -1897,14 +2055,14 @@ async function buildMarketOverview({ refresh = false } = {}) {
     }
   };
 
-  const [marketsRaw, breadth, industries, concepts, amountRows, gainRows, flowRows] = await Promise.all([
+  const [marketsRaw, breadth, industries, concepts, amountResult, gainResult, flowResult] = await Promise.all([
     capture('主要指数', cached('markets:all', 60_000, () => fetchMarkets({ retries: 0 }), { stale: refresh }), []),
     capture('全市场涨跌家数', cached('aShare:breadth', 5 * 60_000, fetchAShareBreadth, { stale: refresh }), null),
     capture('行业板块', cached('overview:industry', 90_000, () => fetchBoardList('industry', 14), { stale: refresh }), []),
     capture('概念热点', cached('overview:concept', 90_000, () => fetchBoardList('concept', 14), { stale: refresh }), []),
-    capture('成交活跃股', cached('overview:stocks:amount', 60_000, () => fetchMarketListResilient({ fs: A_SHARE_LIST_FILTER, fid: 'f6', size: 55, retries: 0 }), { stale: refresh }), []),
-    capture('涨幅活跃股', cached('overview:stocks:gain', 60_000, () => fetchMarketListResilient({ fs: A_SHARE_LIST_FILTER, fid: 'f3', size: 55, retries: 0 }), { stale: refresh }), []),
-    capture('资金活跃股', cached('overview:stocks:flow', 60_000, () => fetchMarketListResilient({ fs: A_SHARE_LIST_FILTER, fid: 'f62', size: 55, retries: 0 }), { stale: refresh }), []),
+    capture('成交活跃股', cached('overview:stocks:amount', 60_000, () => fetchMarketListResilient({ fs: A_SHARE_LIST_FILTER, fid: 'f6', size: 55, retries: 0 }), { stale: refresh, cacheWhen: (result) => result.complete === true }), unavailableMarketListResult('f6')),
+    capture('涨幅活跃股', cached('overview:stocks:gain', 60_000, () => fetchMarketListResilient({ fs: A_SHARE_LIST_FILTER, fid: 'f3', size: 55, retries: 0 }), { stale: refresh, cacheWhen: (result) => result.complete === true }), unavailableMarketListResult('f3')),
+    capture('资金活跃股', cached('overview:stocks:flow', 60_000, () => fetchMarketListResilient({ fs: A_SHARE_LIST_FILTER, fid: 'f62', size: 55, retries: 0 }), { stale: refresh, cacheWhen: (result) => result.complete === true }), unavailableMarketListResult('f62')),
   ]);
 
   let marketGroups = Array.isArray(marketsRaw) ? marketsRaw : marketsRaw.groups;
@@ -1913,12 +2071,8 @@ async function buildMarketOverview({ refresh = false } = {}) {
     marketGroups = Array.isArray(fallback) ? fallback : fallback.groups;
   }
   const markets = computeMarkets(Array.isArray(marketGroups) ? marketGroups : [], breadth);
-  const pool = mergeMarketStockPools([
-    { key: 'Amount', rows: amountRows },
-    { key: 'Gain', rows: gainRows },
-    { key: 'Flow', rows: flowRows },
-  ]);
-  const stocks = scoreMarketStocks(pool);
+  const stockRanking = buildStockRankings({ amount: amountResult, gain: gainResult, flow: flowResult });
+  const { pool, stocks } = stockRanking;
   const topConcepts = concepts.slice(0, 3);
   const topIndustries = industries.slice(0, 3);
   const focusNames = topConcepts.map((item) => item.name);
@@ -1934,6 +2088,9 @@ async function buildMarketOverview({ refresh = false } = {}) {
     hotspots: concepts.slice(0, 10),
     sectors: industries.slice(0, 12),
     stocks,
+    dataQuality: {
+      stocks: stockRanking.dataQuality,
+    },
     pulse: {
       headline: topConcepts.length ? `热点聚焦：${focusNames.join('、')}` : markets.aShare.analysis.headline,
       summary: topConcepts.length
@@ -3129,39 +3286,34 @@ async function handleMarketOverview(url, res) {
   try {
     const payload = await buildMarketOverview({ refresh });
     const snapshot = await readSnapshot('market-overview');
-    const staleSections = [];
-    if (snapshot) {
-      if (!payload.hotspots.length && safeArray(snapshot.hotspots).length) {
-        payload.hotspots = snapshot.hotspots;
-        payload.coverage.conceptCount = snapshot.coverage && snapshot.coverage.conceptCount || snapshot.hotspots.length;
-        staleSections.push('概念热点');
-      }
-      if (!payload.sectors.length && safeArray(snapshot.sectors).length) {
-        payload.sectors = snapshot.sectors;
-        payload.coverage.industryCount = snapshot.coverage && snapshot.coverage.industryCount || snapshot.sectors.length;
-        staleSections.push('行业板块');
-      }
-      ['hot', 'intraday', 'tomorrow'].forEach((key) => {
-        if (!safeArray(payload.stocks[key]).length && snapshot.stocks && safeArray(snapshot.stocks[key]).length) {
-          payload.stocks[key] = snapshot.stocks[key];
-          if (!staleSections.includes('活跃股票')) staleSections.push('活跃股票');
-        }
-      });
-      if (!payload.coverage.stockPool && snapshot.coverage && snapshot.coverage.stockPool) {
-        payload.coverage.stockPool = snapshot.coverage.stockPool;
-      }
+    const staleSections = restoreMarketOverviewSections(payload, snapshot);
+    const nonStockStaleSections = staleSections.filter((section) => section !== '活跃股票');
+    if (nonStockStaleSections.length) {
+      payload.warnings.push(`${nonStockStaleSections.join('、')}使用最近成功快照`);
     }
-    if (staleSections.length) {
-      payload.staleSections = staleSections;
-      payload.warnings.push(`${staleSections.join('、')}使用最近成功快照`);
+    if (canPersistMarketOverview(payload)) {
+      await writeSnapshot('market-overview', completeMarketOverviewSnapshot(payload));
     }
-    const hasLiveCore = payload.hotspots.length && payload.sectors.length && payload.stocks.hot.length && !staleSections.length;
-    if (hasLiveCore) await writeSnapshot('market-overview', payload);
     return json(res, 200, payload);
   } catch (error) {
     console.error('[market-overview]', error.message);
     const snapshot = await readSnapshot('market-overview');
     if (snapshot) {
+      if (!isCompleteStockSnapshot(snapshot)) {
+        snapshot.stocks = { hot: [], intraday: [], tomorrow: [] };
+        snapshot.coverage = { ...(snapshot.coverage || {}), stockPool: 0 };
+        snapshot.dataQuality = {
+          ...(snapshot.dataQuality || {}),
+          stocks: {
+            status: 'degraded',
+            complete: false,
+            provider: 'unavailable',
+            reason: '旧快照缺少完整评分字段',
+            missingFields: ['volumeRatio', 'speed', 'mainNet', 'mainNetPct'],
+          },
+        };
+        snapshot.warnings = [...safeArray(snapshot.warnings), '股票榜暂停评分：暂无可用的完整快照'];
+      }
       snapshot.stale = true;
       snapshot.staleReason = '上游市场数据暂不可用，展示最近一次成功快照';
       return json(res, 200, snapshot);

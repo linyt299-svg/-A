@@ -86,6 +86,13 @@
     }).format(date);
   }
 
+  function formatShanghaiMinute(date = new Date()) {
+    return new Intl.DateTimeFormat('zh-CN', {
+      timeZone: 'Asia/Shanghai',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+    }).format(date);
+  }
+
   function updateClock() {
     const now = new Date();
     $('#clock').textContent = formatShanghaiTime(now);
@@ -207,10 +214,10 @@
       </div>`).join('');
   }
 
-  function renderHotStocks(items) {
+  function renderHotStocks(items, emptyText = '热门股票数据暂时不可用') {
     const body = $('#hotStockBody');
     if (!Array.isArray(items) || !items.length) {
-      body.innerHTML = '<tr><td colspan="9"><div class="market-empty">热门股票数据暂时不可用</div></td></tr>';
+      body.innerHTML = `<tr><td colspan="9"><div class="market-empty">${escapeHtml(emptyText)}</div></td></tr>`;
       return;
     }
     body.innerHTML = items.slice(0, 10).map((stock) => `
@@ -258,26 +265,50 @@
   function renderMeta(data) {
     const generated = data.generatedAt ? new Date(data.generatedAt) : new Date();
     const coverage = data.coverage || {};
+    const stockQuality = data.dataQuality && data.dataQuality.stocks || {};
+    const stocksDegraded = stockQuality.complete === false;
+    const stockSnapshot = stocksDegraded && data.stockSnapshotAt ? new Date(data.stockSnapshotAt) : null;
     const totalMarket = num(coverage.totalMarket || (data.market && data.market.validCount));
     const fullMarketText = totalMarket ? `全市场 ${totalMarket.toLocaleString('zh-CN')} 只` : '全市场 A 股';
     $('#updateTime').textContent = formatShanghaiTime(generated);
-    $('#freshnessText').textContent = data.stale ? `快照数据 · ${data.staleReason || '上游暂不可用'}` : `${formatShanghaiTime(generated)} 更新 · 行情可能延时`;
+    $('#freshnessText').textContent = data.stale
+      ? `快照数据 · ${data.staleReason || '上游暂不可用'}`
+      : stockSnapshot
+        ? `其他行情 ${formatShanghaiMinute(generated)} 更新 · 股票榜快照 ${formatShanghaiMinute(stockSnapshot)}`
+        : `${formatShanghaiTime(generated)} 更新 · 行情可能延时`;
     $('#coverageText').textContent = `${fullMarketText} · 从 ${num(coverage.stockPool)} 只活跃样本筛选 · 跟踪 ${num(coverage.conceptCount)} 个概念`;
     const warnings = Array.isArray(data.warnings) ? data.warnings : [];
-    $('#warningText').textContent = data.stale ? '正在展示最近成功快照' : warnings.length ? warnings.join('、') : '全部核心数据源正常';
-    $('#stockCoverage').textContent = `${fullMarketText} · 聚焦 ${num(coverage.stockPool)} 只活跃样本`;
-    $('#sourceLabel').textContent = data.stale ? '最近成功快照' : '东方财富 / 新浪公开数据';
+    if (stocksDegraded && stockSnapshot) {
+      $('#warningText').textContent = `股票榜数据源已降级 · 当前展示 ${formatShanghaiMinute(stockSnapshot)} 的最后完整评分；指数、行业等其他行情仍在实时更新`;
+      $('#stockCoverage').textContent = `${fullMarketText} · 聚焦 ${num(coverage.stockPool)} 只快照样本`;
+      $('#sourceLabel').textContent = '最后完整快照 · 东方财富';
+    } else if (stocksDegraded) {
+      $('#warningText').textContent = stockQuality.reason || '股票榜数据源已降级，评分暂停';
+      $('#stockCoverage').textContent = '股票评分已暂停 · 暂无完整快照';
+      $('#sourceLabel').textContent = stockQuality.provider === 'sina'
+        ? '新浪基础行情 · 暂停评分'
+        : stockQuality.provider === 'eastmoney'
+          ? '东方财富残缺行情 · 暂停评分'
+          : '股票数据不可用 · 暂停评分';
+    } else {
+      $('#warningText').textContent = data.stale ? '正在展示最近成功快照' : warnings.length ? warnings.join('、') : '全部核心数据源正常';
+      $('#stockCoverage').textContent = `${fullMarketText} · 聚焦 ${num(coverage.stockPool)} 只活跃样本`;
+      $('#sourceLabel').textContent = data.stale ? '最后完整快照 · 东方财富' : '东方财富 · 完整评分';
+    }
   }
 
   function renderAll(data) {
+    const stockQuality = data.dataQuality && data.dataQuality.stocks;
+    const scoringPaused = stockQuality && stockQuality.complete === false && !data.stockSnapshotAt;
+    const pausedText = '股票榜数据源已降级，当前评分已暂停';
     renderStatus(data.status);
     renderHero(data);
     renderIndices(data.indices);
     renderHotspots(data.hotspots);
     renderSectors(data.sectors);
-    renderHotStocks(data.stocks && data.stocks.hot);
-    renderTrendList('#intradayList', data.stocks && data.stocks.intraday, '当前没有达到阈值的日内趋势候选');
-    renderTrendList('#tomorrowList', data.stocks && data.stocks.tomorrow, '当前没有达到阈值的明日观察候选');
+    renderHotStocks(data.stocks && data.stocks.hot, scoringPaused ? pausedText : '热门股票数据暂时不可用');
+    renderTrendList('#intradayList', data.stocks && data.stocks.intraday, scoringPaused ? pausedText : '当前没有达到阈值的日内趋势候选');
+    renderTrendList('#tomorrowList', data.stocks && data.stocks.tomorrow, scoringPaused ? pausedText : '当前没有达到阈值的明日观察候选');
     const next = data.pulse && data.pulse.nextTradingDay;
     $('#tomorrowTitle').textContent = next ? `${next.label}观察票 · ${next.short} ${next.weekday}` : '明日观察票';
     $('#trendMethod').textContent = data.methodology
@@ -300,7 +331,12 @@
       if (seq !== state.requestSeq) return;
       state.data = payload;
       renderAll(payload);
-      if (refresh) toast('市场全景已更新');
+      if (refresh) {
+        const stockQuality = payload.dataQuality && payload.dataQuality.stocks;
+        toast(stockQuality && stockQuality.complete === false
+          ? payload.stockSnapshotAt ? '其他行情已更新，股票榜沿用完整快照' : '其他行情已更新，股票评分已暂停'
+          : '市场全景已更新');
+      }
     } catch (error) {
       if (seq !== state.requestSeq) return;
       toast(error.message || '市场数据加载失败', true);

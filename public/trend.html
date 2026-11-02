@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#f2efe6" />
+  <meta name="description" content="观澜投研趋势后续票：展示所有通过量化门槛的趋势候选，不设固定数量。" />
+  <title>趋势后续票 · 观澜投研</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230d2b24'/%3E%3Cpath d='M12 40c6-12 12-12 18 0s12 12 22-2' stroke='%23d5e97a' stroke-width='4' fill='none' stroke-linecap='round'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body class="market-page trend-page">
+  <svg class="svg-sprite" aria-hidden="true">
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 6v5h-5"/><path d="M4 18v-5h5"/><path d="M6.1 9a7 7 0 0 1 11.2-2.3L20 11M4 13l2.7 4.3A7 7 0 0 0 17.9 15"/></symbol>
+    <symbol id="i-wave" viewBox="0 0 24 24"><path d="M2 14c3.2-6.5 6.3-6.5 9.5 0s6.3 6.5 10.5-1"/><path d="M2 8c3.2-6.5 6.3-6.5 9.5 0S17.8 14.5 22 7"/></symbol>
+  </svg>
+
+  <div class="page-noise" aria-hidden="true"></div>
+  <div class="loading-bar" id="loadingBar"></div>
+
+  <header class="topbar" id="topbar">
+    <a class="brand" href="/market.html" aria-label="观澜投研市场全景">
+      <span class="brand-mark"><svg><use href="#i-wave"/></svg></span>
+      <span class="brand-copy"><strong>观澜投研</strong><small>GUANLAN RESEARCH</small></span>
+    </a>
+    <div class="search-shell" id="searchShell">
+      <svg class="icon search-icon"><use href="#i-search"/></svg>
+      <input id="stockSearch" type="text" placeholder="搜索股票，进入个股研究" autocomplete="off" spellcheck="false" aria-label="搜索股票" />
+      <kbd>/</kbd>
+      <div class="search-results" id="searchResults" hidden></div>
+    </div>
+    <div class="topbar-right">
+      <div class="market-state" id="marketState"><span class="status-dot"></span><span class="market-state-copy"><b>加载中</b><small>沪深市场</small></span></div>
+      <div class="topbar-divider"></div>
+      <div class="clock-block"><strong id="clock">--:--:--</strong><small id="today">----</small></div>
+      <button class="icon-button refresh-button" id="trendRefreshBtn" type="button" title="刷新候选" aria-label="刷新候选"><svg class="icon"><use href="#i-refresh"/></svg></button>
+      <button class="icon-button logout-button" type="button" data-logout title="退出登录" aria-label="退出登录"><svg class="icon" viewBox="0 0 24 24"><path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4M14 8l4 4-4 4M9 12h9"/></svg></button>
+    </div>
+  </header>
+
+  <nav class="section-nav market-nav" aria-label="研究台导航">
+    <div class="nav-links">
+      <a href="/market.html" class="nav-link">市场全景</a>
+      <a href="/trend.html" class="nav-link active" aria-current="page">趋势后续票</a>
+      <a href="/" class="nav-link">个股研究</a>
+    </div>
+    <div class="nav-meta"><span class="live-dot"></span><span>数据更新</span><time id="updateTime">--:--:--</time><span class="nav-sep"></span><span id="sourceLabel">东方财富 / 新浪公开数据</span></div>
+  </nav>
+
+  <main class="trend-page-dashboard">
+    <section class="panel trend-page-hero">
+      <div>
+        <p class="panel-kicker">AI QUALIFIED WATCHLIST</p>
+        <h1>趋势后续票</h1>
+        <p>完整呈现本轮分析中达到门槛的候选。数量不预设：符合条件就展示，不符合条件就不进入列表。</p>
+      </div>
+      <div class="trend-page-summary" aria-label="候选概览">
+        <div><span>日内趋势</span><b id="intradayTotal">—</b><small>达到动能门槛</small></div>
+        <div><span>后续观察</span><b id="tomorrowTotal">—</b><small id="tomorrowDate">下一交易日</small></div>
+      </div>
+    </section>
+
+    <section class="panel trend-page-toolbar" aria-label="候选筛选">
+      <div class="trend-filter-group">
+        <button type="button" class="trend-filter-button active" data-filter="all">全部候选</button>
+        <button type="button" class="trend-filter-button" data-filter="intraday">日内趋势</button>
+        <button type="button" class="trend-filter-button" data-filter="tomorrow">后续观察</button>
+      </div>
+      <p id="coverageSummary">正在读取分析范围…</p>
+    </section>
+
+    <section class="panel trend-full-section" id="intradaySection" data-kind="intraday">
+      <header class="trend-full-head">
+        <div><p class="panel-kicker">INTRADAY MOMENTUM</p><h2>日内趋势票</h2><p>当日动能仍在延续，按模型分由高到低排列。</p></div>
+        <span class="trend-count-badge" id="intradayCount">—</span>
+      </header>
+      <div class="trend-full-grid" id="intradayGrid"><div class="market-empty">正在计算日内趋势候选…</div></div>
+    </section>
+
+    <section class="panel trend-full-section" id="tomorrowSection" data-kind="tomorrow">
+      <header class="trend-full-head">
+        <div><p class="panel-kicker">FOLLOW-THROUGH WATCH</p><h2 id="tomorrowTitle">后续观察票</h2><p>关注收盘结构、量价配合与下一交易日承接。</p></div>
+        <span class="trend-count-badge" id="tomorrowCount">—</span>
+      </header>
+      <div class="trend-full-grid" id="tomorrowGrid"><div class="market-empty">正在计算后续观察候选…</div></div>
+    </section>
+
+    <section class="panel trend-page-note">
+      <b>筛选说明：</b><span id="methodText">候选来自活跃样本池的多因子分析，只有达到分数和资金门槛的股票才会展示。</span>
+      <br />候选结果会随行情变化，不代表确定走势，不构成荐股或收益承诺。
+    </section>
+  </main>
+
+  <footer class="page-footer market-footer">
+    <div class="footer-brand"><span class="brand-mark small"><svg><use href="#i-wave"/></svg></span><span>观澜投研 · 趋势后续票</span></div>
+    <p>公开行情可能存在延迟；请结合风险承受能力独立判断。</p>
+  </footer>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="/auth-client.js"></script>
+  <script src="/trend.js" defer></script>
+</body>
+</html>

@@ -845,6 +845,7 @@
         _key: `${code}:${position.cost}:${position.shares}:${position.capital || 0}:${state.data.quote.price}`,
       };
       renderPositionAdvice(payload.advice, position);
+      updateCopilotContext();
     } catch (error) {
       if (seq !== state.positionSeq || state.code !== code) return;
       $('#positionAction').textContent = '建议暂不可用';
@@ -924,6 +925,7 @@
       state.positionSeq += 1;
       closePositionDialog();
       renderPosition();
+      updateCopilotContext();
       toast('已清空该股票的持仓记录');
     });
     $('#positionForm').addEventListener('submit', (event) => {
@@ -951,6 +953,7 @@
       state.positionAdvice = null;
       closePositionDialog();
       renderPosition();
+      updateCopilotContext();
       toast('持仓已保存，AI 正在生成建议');
     });
   }
@@ -1480,6 +1483,10 @@
     const ai = data.ai || {};
     const flow = data.flow || {};
     const reports = data.reports || {};
+    const position = readStoredPosition(state.code);
+    const positionAdvice = position && state.positionAdvice ? state.positionAdvice : null;
+    const price = Number(quote.price);
+    const marketValue = position && Number.isFinite(price) ? price * position.shares : null;
     const stored = readStoredCorrections();
     const editableFields = Object.entries(COPILOT_EDITABLE_FIELDS).map(([targetId, meta]) => {
       const element = document.getElementById(targetId);
@@ -1545,6 +1552,24 @@
         consensusScore: reports.consensusScore,
         latest: (reports.list || []).slice(0, 8),
       },
+      position: position ? {
+        hasPosition: true,
+        cost: position.cost,
+        shares: position.shares,
+        capital: position.capital,
+        marketValue,
+        pnl: Number.isFinite(marketValue) ? marketValue - position.cost * position.shares : null,
+        pnlPct: Number.isFinite(price) ? ((price / position.cost) - 1) * 100 : null,
+        weightPct: position.capital && Number.isFinite(marketValue) ? (marketValue / position.capital) * 100 : null,
+        aiAdvice: positionAdvice ? {
+          action: positionAdvice.action,
+          confidence: positionAdvice.confidence,
+          advice: positionAdvice.advice,
+          plan: positionAdvice.plan,
+          riskNote: positionAdvice.riskNote,
+          stats: positionAdvice.stats,
+        } : null,
+      } : { hasPosition: false },
       announcements: ((data.announcements && data.announcements.list) || []).slice(0, 10),
       marketRisk: data.markets && data.markets.risk,
       visibleSections: {
@@ -1556,6 +1581,7 @@
         '机构观点': visibleSectionText('#institutions'),
         '公司公告': visibleSectionText('#announcements'),
         '外围市场': visibleSectionText('#global', 2500),
+        '我的持仓': visibleSectionText('.position-block', 2500),
       },
       editableFields,
       appliedCorrections: stored,
@@ -1567,13 +1593,15 @@
     const quote = state.data.quote || {};
     const generated = new Date(state.data.generatedAt);
     const storedCount = Object.keys(readStoredCorrections()).length;
+    const position = readStoredPosition(state.code);
     $('#copilotContextName').textContent = `${quote.name || '当前个股'} ${quote.code || state.code}`;
     $('#copilotContextTime').textContent = Number.isNaN(generated.getTime())
       ? '页面已同步'
       : `同步 ${generated.toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false, hour: '2-digit', minute: '2-digit' })}`;
-    $('#copilotMode').textContent = storedCount
-      ? `页面上下文已同步 · ${storedCount} 项修正`
-      : '页面上下文已同步';
+    const contextParts = ['页面上下文已同步'];
+    if (position) contextParts.push(`已读取持仓 ${position.shares.toLocaleString('zh-CN')} 股`);
+    if (storedCount) contextParts.push(`${storedCount} 项修正`);
+    $('#copilotMode').textContent = contextParts.join(' · ');
   }
 
   function appendCopilotMessage(role, payload) {

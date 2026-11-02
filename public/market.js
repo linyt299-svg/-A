@@ -257,12 +257,15 @@
 
   function renderMeta(data) {
     const generated = data.generatedAt ? new Date(data.generatedAt) : new Date();
+    const coverage = data.coverage || {};
+    const totalMarket = num(coverage.totalMarket || (data.market && data.market.validCount));
+    const fullMarketText = totalMarket ? `全市场 ${totalMarket.toLocaleString('zh-CN')} 只` : '全市场 A 股';
     $('#updateTime').textContent = formatShanghaiTime(generated);
     $('#freshnessText').textContent = data.stale ? `快照数据 · ${data.staleReason || '上游暂不可用'}` : `${formatShanghaiTime(generated)} 更新 · 行情可能延时`;
-    $('#coverageText').textContent = `活跃股池 ${num(data.coverage && data.coverage.stockPool)} 只 · ${num(data.coverage && data.coverage.conceptCount)} 个概念样本`;
+    $('#coverageText').textContent = `${fullMarketText} · 从 ${num(coverage.stockPool)} 只活跃样本筛选 · 跟踪 ${num(coverage.conceptCount)} 个概念`;
     const warnings = Array.isArray(data.warnings) ? data.warnings : [];
     $('#warningText').textContent = data.stale ? '正在展示最近成功快照' : warnings.length ? warnings.join('、') : '全部核心数据源正常';
-    $('#stockCoverage').textContent = `扫描 ${num(data.coverage && data.coverage.stockPool)} 只活跃股`;
+    $('#stockCoverage').textContent = `${fullMarketText} · 聚焦 ${num(coverage.stockPool)} 只活跃样本`;
     $('#sourceLabel').textContent = data.stale ? '最近成功快照' : '东方财富 / 新浪公开数据';
   }
 

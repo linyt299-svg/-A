@@ -51,6 +51,7 @@
   <nav class="section-nav market-nav" aria-label="市场全景导航">
     <div class="nav-links">
       <a href="#market-overview" class="nav-link active">市场全景</a>
+      <a href="/trend.html" class="nav-link">趋势后续票</a>
       <a href="/" class="nav-link">个股研究</a>
     </div>
     <div class="nav-meta"><span class="live-dot"></span><span>数据更新</span><time id="updateTime">--:--:--</time><span class="nav-sep"></span><span id="sourceLabel">东方财富 / 新浪公开数据</span></div>
@@ -128,7 +129,7 @@
     <section class="market-section trend-pick-section panel" id="trend-picks">
       <header class="market-section-head stock-section-head">
         <div><p class="panel-kicker">QUANT WATCHLIST</p><h2>趋势候选</h2><p>把“今天强”和“明天可能延续”拆开判断，给出因子与失效条件</p></div>
-        <span class="model-badge">本地多因子 · 置信度 ≤ 72%</span>
+        <div class="trend-head-actions"><span class="model-badge">本地多因子 · 置信度 ≤ 72%</span><a class="trend-more-link" href="/trend.html">查看更多候选 <span aria-hidden="true">→</span></a></div>
       </header>
       <div class="trend-columns">
         <article class="trend-column intraday-column">
@@ -148,7 +149,7 @@
 
     <section class="market-method panel">
       <div><svg class="icon"><use href="#i-clock"/></svg><span>数据时效</span><b id="freshnessText">等待更新</b></div>
-      <div><svg class="icon"><use href="#i-layers"/></svg><span>覆盖范围</span><b id="coverageText">沪深 A 股</b></div>
+      <div><svg class="icon"><use href="#i-layers"/></svg><span>分析范围</span><b id="coverageText">全市场加载中</b></div>
       <div><svg class="icon"><use href="#i-info"/></svg><span>降级状态</span><b id="warningText">实时数据加载中</b></div>
     </section>
   </main>

@@ -1796,7 +1796,6 @@ function scoreMarketStocks(stocks) {
     };
   }).filter((stock) => stock.score >= 52)
     .sort((a, b) => b.score - a.score)
-    .slice(0, 6)
     .map((stock, index) => ({ ...stock, rank: index + 1 }));
 
   const tomorrow = candidates.map((stock) => {
@@ -1826,7 +1825,6 @@ function scoreMarketStocks(stocks) {
     };
   }).filter((stock) => stock.score >= 54 && num(stock.mainNet) >= 0)
     .sort((a, b) => b.score - a.score)
-    .slice(0, 6)
     .map((stock, index) => ({ ...stock, rank: index + 1 }));
 
   return { hot, intraday, tomorrow };
@@ -1896,7 +1894,7 @@ async function buildMarketOverview({ refresh = false } = {}) {
       disclaimer: '候选仅是公开行情的量化筛选结果，不代表确定走势，不构成投资建议。',
       intradayRule: {
         title: '日内趋势票 · 日内动能分规则',
-        rank: '在活跃股池（成交额 / 涨幅 / 资金三榜合并去重，约 165 只）内按日内动能分从高到低排序，取前 6 名；分数相同按成交额排名（流动性）靠前者优先。',
+        rank: '在活跃股池（成交额 / 涨幅 / 资金三榜合并去重）内按日内动能分从高到低排序；仅展示达到门槛的候选，不设固定数量，分数相同按成交额排名（流动性）靠前者优先。',
         score: '日内动能分 = 当日涨幅×20% + 涨速×13% + 换手×13% + 量比×14% + 收盘位置×17% + 主力资金×15% + 流动性×8%（满分 100）',
         factors: [
           { label: '当日涨幅', weight: '20%', note: '（涨幅 − 0.4%）÷ 6.6 归一化，涨幅越高分越高' },
@@ -1912,7 +1910,7 @@ async function buildMarketOverview({ refresh = false } = {}) {
       },
       tomorrowRule: {
         title: '明日观察票 · 日内动能分规则',
-        rank: '在活跃股池内按日内动能分从高到低排序，取前 6 名；分数相同按成交额排名（流动性）靠前者优先。',
+        rank: '在活跃股池内按日内动能分从高到低排序；仅展示达到门槛的候选，不设固定数量，分数相同按成交额排名（流动性）靠前者优先。',
         score: '日内动能分 = 温和涨幅×18% + 换手×13% + 量比×15% + 主力资金×24% + 收盘位置×20% + 流动性×10%（满分 100）',
         factors: [
           { label: '温和涨幅', weight: '18%', note: '涨幅 ≤ 6.5% 按（涨幅 − 0.4%）÷ 4.6，涨幅过高则递减，偏好温和上涨' },
@@ -1927,6 +1925,7 @@ async function buildMarketOverview({ refresh = false } = {}) {
       },
     },
     coverage: {
+      totalMarket: markets.aShare.validCount,
       stockPool: pool.length,
       industryCount: industries.length,
       conceptCount: concepts.length,
@@ -2839,12 +2838,19 @@ function localCopilotAnswer(question, context) {
   const analysis = context.analysis || {};
   const flow = context.capitalFlow || {};
   const institutions = context.institutions || {};
+  const position = context.position || { hasPosition: false };
   const audit = auditCopilotContext(context);
   const name = `${stock.name || '当前股票'}（${stock.code || '—'}）`;
   let answer = '';
   let citations = [];
 
-  if (/错误|矛盾|检查|纠错|修正|有问题/.test(q)) {
+  if (/持仓|成本|仓位|加仓|减仓|止盈|止损|盈亏/.test(q) && position.hasPosition) {
+    const pnlText = Number.isFinite(num(position.pnlPct, NaN)) ? `${signed(position.pnlPct)}%` : '暂无法计算';
+    const weightText = Number.isFinite(num(position.weightPct, NaN)) ? `${num(position.weightPct).toFixed(1)}%` : '未录入总资金，无法计算';
+    const advice = position.aiAdvice || {};
+    answer = `${name}已录入持仓：成本 ${position.cost} 元、${num(position.shares).toLocaleString('zh-CN')} 股，当前浮动盈亏 ${pnlText}，仓位 ${weightText}。${advice.action ? `持仓模型建议“${advice.action}”：${advice.advice || advice.plan || ''}` : '持仓模型建议仍在生成，可先结合页面支撑、压力与风险位控制敞口。'}${advice.riskNote ? ` 风险提示：${advice.riskNote}` : ''}`;
+    citations = ['我的持仓', '核心结论', '明日预判'];
+  } else if (/错误|矛盾|检查|纠错|修正|有问题/.test(q)) {
     answer = audit.issues.length
       ? `我检查了当前页面，发现 ${audit.issues.length} 个需要核对的问题：\n${audit.issues.map((item, index) => `${index + 1}. ${item}`).join('\n')}\n\n下方只会修改页面展示，不会改写上游行情源；请确认后再应用。`
       : '已核对当前价与日内高低、支撑/压力方向、预测概率、数据时效及页面显示值，暂未发现明确的结构性矛盾。免费行情可能延时，关键决策仍建议对照公告和交易所数据。';
@@ -2867,8 +2873,11 @@ function localCopilotAnswer(question, context) {
     citations = ['核心结论', '资金面', '公司公告'];
   } else {
     const levels = analysis.levels || {};
-    answer = `${name}当前综合研判分 ${analysis.score ?? '—'}/100，模型观点为“${analysis.stance || '暂无'}”，置信度 ${analysis.confidence ?? '—'}%。${analysis.summary || ''}\n\n现价 ${stock.price ?? '—'}，涨跌幅 ${stock.changePct == null ? '—' : signed(stock.changePct) + '%'}；支撑 ${levels.support ?? '—'}，压力 ${levels.resistance ?? '—'}；资金信号“${flow.signal || '暂无'}”。`;
-    citations = ['个股总览', '核心结论', '资金面'];
+    const positionSummary = position.hasPosition
+      ? `\n\n已同步你的持仓：成本 ${position.cost} 元、${num(position.shares).toLocaleString('zh-CN')} 股，浮动盈亏 ${Number.isFinite(num(position.pnlPct, NaN)) ? `${signed(position.pnlPct)}%` : '暂无法计算'}；后续判断会优先结合你的实际成本与仓位。`
+      : '';
+    answer = `${name}当前综合研判分 ${analysis.score ?? '—'}/100，模型观点为“${analysis.stance || '暂无'}”，置信度 ${analysis.confidence ?? '—'}%。${analysis.summary || ''}\n\n现价 ${stock.price ?? '—'}，涨跌幅 ${stock.changePct == null ? '—' : signed(stock.changePct) + '%'}；支撑 ${levels.support ?? '—'}，压力 ${levels.resistance ?? '—'}；资金信号“${flow.signal || '暂无'}”。${positionSummary}`;
+    citations = position.hasPosition ? ['个股总览', '核心结论', '资金面', '我的持仓'] : ['个股总览', '核心结论', '资金面'];
   }
   return normalizeCopilotResult({ answer, citations, corrections: /错误|矛盾|检查|纠错|修正|有问题/.test(q) ? audit.corrections : [] }, context, 'local');
 }
@@ -2880,7 +2889,7 @@ async function cloudCopilotAnswer(question, messages, context) {
 2. 引用 citations 时只能使用上下文 visibleSections 的章节名。\n
 3. 如果发现页面内部矛盾或明显错误，可以提出 corrections；只能使用 editableFields 中存在的 targetId，且修改应尽量小。原始行情数据、代码和现价不得修改。\n
 4. correction 只是建议，不得声称已经修改。没有足够证据时 corrections 必须为空。\n
-5. 如果用户有咨询，可以根据资金，走势，从短期操盘手角度出发，给出建议。\n
+5. 如果用户有咨询，可以根据资金、走势与 context.position 中的用户持仓，从短期操盘手角度给出建议。只要 hasPosition 为 true，就必须显式结合成本、股数、仓位、浮盈亏和已有持仓建议；不得声称用户未录入持仓。\n
 只返回一个 JSON 对象，不要 Markdown 代码围栏，格式：{"answer":"...","citations":["核心结论"],"corrections":[{"targetId":"...","suggestedValue":"...","reason":"...","confidence":85}]}`;
   const compactMessages = safeArray(messages).slice(-8).map((item) => ({
     role: item.role === 'assistant' ? 'assistant' : 'user',
@@ -3175,7 +3184,7 @@ const server = http.createServer(async (req, res) => {
   try {
     if (url.pathname === '/api/auth/login') return await handleLogin(req, res);
     if (url.pathname === '/login' || url.pathname === '/login.html') {
-      if (getSession(req)) return redirect(res, '/');
+      if (getSession(req)) return redirect(res, '/market.html');
       return await serveStatic(req, res, '/login.html');
     }
     if (url.pathname === '/login.css' || url.pathname === '/login.js') {
@@ -3194,7 +3203,7 @@ const server = http.createServer(async (req, res) => {
     const session = getSession(req);
     if (!session) {
       if (url.pathname.startsWith('/api/')) return unauthorized(res);
-      const next = url.pathname === '/' ? '/' : `${url.pathname}${url.search}`;
+      const next = url.pathname === '/' ? '/market.html' : `${url.pathname}${url.search}`;
       return redirect(res, `/login?next=${encodeURIComponent(next)}`);
     }
 

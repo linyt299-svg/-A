@@ -1890,13 +1890,14 @@ async function buildMarketOverview({ refresh = false } = {}) {
       nextTradingDay: nextDay,
     },
     methodology: {
+      scoreDescription: '日内动能筛选分：主要看当天涨幅、涨速、换手、量比、收盘位置、当日主力资金和流动性，用于在活跃股票池中排名。',
       intraday: '当日涨幅、涨速、量比、换手、收盘位置、主力资金与流动性加权；用于观察日内动能延续。',
       tomorrow: '收盘强度、温和涨幅、量价配合、主力净流入与流动性加权；最高置信度封顶 72%。',
       disclaimer: '候选仅是公开行情的量化筛选结果，不代表确定走势，不构成投资建议。',
       intradayRule: {
-        title: '日内趋势票 · 排名与得分规则',
-        rank: '在活跃股池（成交额 / 涨幅 / 资金三榜合并去重，约 165 只）内按综合得分从高到低排序，取前 6 名；得分相同按成交额排名（流动性）靠前者优先。',
-        score: '综合得分 = 当日涨幅×20% + 涨速×13% + 换手×13% + 量比×14% + 收盘位置×17% + 主力资金×15% + 流动性×8%（满分 100）',
+        title: '日内趋势票 · 日内动能分规则',
+        rank: '在活跃股池（成交额 / 涨幅 / 资金三榜合并去重，约 165 只）内按日内动能分从高到低排序，取前 6 名；分数相同按成交额排名（流动性）靠前者优先。',
+        score: '日内动能分 = 当日涨幅×20% + 涨速×13% + 换手×13% + 量比×14% + 收盘位置×17% + 主力资金×15% + 流动性×8%（满分 100）',
         factors: [
           { label: '当日涨幅', weight: '20%', note: '（涨幅 − 0.4%）÷ 6.6 归一化，涨幅越高分越高' },
           { label: '涨速', weight: '13%', note: '（涨速 + 0.15）÷ 1.5 归一化，反映短线上冲力度' },
@@ -1906,13 +1907,13 @@ async function buildMarketOverview({ refresh = false } = {}) {
           { label: '主力资金', weight: '15%', note: '（主力净流入占比 + 2）÷ 10 归一化，净流入加分' },
           { label: '流动性', weight: '8%', note: '按成交额排名：1 − 排名 / 55，成交额越大分越高' },
         ],
-        threshold: '入围门槛：当日涨幅 0.4%~9.7%、成交额 ≥ 3000 万、非 ST/退，且综合得分 ≥ 52',
-        confidence: '置信度 = 48 + 得分 × 0.25，落在 52%~72%',
+        threshold: '入围门槛：当日涨幅 0.4%~9.7%、成交额 ≥ 3000 万、非 ST/退，且日内动能分 ≥ 52',
+        confidence: '置信度 = 48 + 日内动能分 × 0.25，落在 52%~72%',
       },
       tomorrowRule: {
-        title: '明日观察票 · 排名与得分规则',
-        rank: '在活跃股池内按综合得分从高到低排序，取前 6 名；得分相同按成交额排名（流动性）靠前者优先。',
-        score: '综合得分 = 温和涨幅×18% + 换手×13% + 量比×15% + 主力资金×24% + 收盘位置×20% + 流动性×10%（满分 100）',
+        title: '明日观察票 · 日内动能分规则',
+        rank: '在活跃股池内按日内动能分从高到低排序，取前 6 名；分数相同按成交额排名（流动性）靠前者优先。',
+        score: '日内动能分 = 温和涨幅×18% + 换手×13% + 量比×15% + 主力资金×24% + 收盘位置×20% + 流动性×10%（满分 100）',
         factors: [
           { label: '温和涨幅', weight: '18%', note: '涨幅 ≤ 6.5% 按（涨幅 − 0.4%）÷ 4.6，涨幅过高则递减，偏好温和上涨' },
           { label: '换手率', weight: '13%', note: '换手率 ÷ 10 归一化，反映承接活跃度' },
@@ -1921,8 +1922,8 @@ async function buildMarketOverview({ refresh = false } = {}) {
           { label: '收盘位置', weight: '20%', note: '（现价 − 最低）÷（最高 − 最低），收于高位利于次日承接' },
           { label: '流动性', weight: '10%', note: '按成交额排名：1 − 排名 / 55' },
         ],
-        threshold: '入围门槛：当日涨幅 0.4%~9.7%、成交额 ≥ 3000 万、非 ST/退，综合得分 ≥ 54 且主力净额 ≥ 0',
-        confidence: '置信度 = 47 + 得分 × 0.27，落在 52%~72%',
+        threshold: '入围门槛：当日涨幅 0.4%~9.7%、成交额 ≥ 3000 万、非 ST/退，日内动能分 ≥ 54 且主力净额 ≥ 0',
+        confidence: '置信度 = 47 + 日内动能分 × 0.27，落在 52%~72%',
       },
     },
     coverage: {
@@ -2144,7 +2145,7 @@ function computeForecast({ quote, technical, flow, markets, composite, levels })
     range: { low, high },
     narrative,
     basis: [
-      `综合评分 ${composite}`,
+      `综合研判分 ${composite}`,
       `MACD ${technical.macd.signal}`,
       flowText,
       `外围${markets.risk ? markets.risk.label : '中性'}`,
@@ -2232,7 +2233,7 @@ function computePositionAdvice(payload, position) {
   let advice;
   let plan;
   if (action === '止损/减仓') {
-    advice = `AI 建议${action}：现价已触及风险位 ${fmtLevel(stop)}，且综合评分偏弱。先减仓 ${suggestedShares} 股，剩余仓位以 ${fmtLevel(defense)} 为最后防线。`;
+    advice = `AI 建议${action}：现价已触及风险位 ${fmtLevel(stop)}，且综合研判分偏弱。先减仓 ${suggestedShares} 股，剩余仓位以 ${fmtLevel(defense)} 为最后防线。`;
     plan = `减仓 ${suggestedShares} 股，剩余 ${Math.max(0, shares - suggestedShares)} 股`;
   } else if (action === '分批止盈') {
     advice = `AI 建议分批止盈：浮盈已达到 ${fmtPct(pnlPct)}，且接近压力位 ${fmtLevel(resistance)}。建议先减仓 ${suggestedShares} 股，保留底仓观察突破。`;
@@ -2450,7 +2451,7 @@ function computeAi({ quote, technical, flow, reports, markets, rows }) {
         : '趋势结构中性';
 
   const summary =
-    `${quote.name} 当前综合评分 ${composite}/100，模型观点为「${stance}」。` +
+    `${quote.name} 当前综合研判分 ${composite}/100，模型观点为「${stance}」。` +
     `${trendSummaryText}，` +
     `${flow.sum5 >= 0 ? '资金面偏积极' : '资金面偏谨慎'}，` +
     `${reports.count ? `机构共识${reports.positiveRatio >= 65 ? '偏正面' : reports.positiveRatio >= 45 ? '中性' : '偏谨慎'}` : '机构信号有限'}。` +
@@ -2866,7 +2867,7 @@ function localCopilotAnswer(question, context) {
     citations = ['核心结论', '资金面', '公司公告'];
   } else {
     const levels = analysis.levels || {};
-    answer = `${name}当前综合评分 ${analysis.score ?? '—'}/100，模型观点为“${analysis.stance || '暂无'}”，置信度 ${analysis.confidence ?? '—'}%。${analysis.summary || ''}\n\n现价 ${stock.price ?? '—'}，涨跌幅 ${stock.changePct == null ? '—' : signed(stock.changePct) + '%'}；支撑 ${levels.support ?? '—'}，压力 ${levels.resistance ?? '—'}；资金信号“${flow.signal || '暂无'}”。`;
+    answer = `${name}当前综合研判分 ${analysis.score ?? '—'}/100，模型观点为“${analysis.stance || '暂无'}”，置信度 ${analysis.confidence ?? '—'}%。${analysis.summary || ''}\n\n现价 ${stock.price ?? '—'}，涨跌幅 ${stock.changePct == null ? '—' : signed(stock.changePct) + '%'}；支撑 ${levels.support ?? '—'}，压力 ${levels.resistance ?? '—'}；资金信号“${flow.signal || '暂无'}”。`;
     citations = ['个股总览', '核心结论', '资金面'];
   }
   return normalizeCopilotResult({ answer, citations, corrections: /错误|矛盾|检查|纠错|修正|有问题/.test(q) ? audit.corrections : [] }, context, 'local');
@@ -3180,6 +3181,15 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/login.css' || url.pathname === '/login.js') {
       return await serveStatic(req, res, url.pathname);
     }
+    if (url.pathname === '/api/health') {
+      return json(res, 200, {
+        ok: true,
+        now: new Date().toISOString(),
+        market: marketStatus(),
+        cacheEntries: CACHE.size,
+        ai: { configured: Boolean(AI_API_KEY), model: AI_API_KEY ? AI_MODEL : 'local-fallback' },
+      });
+    }
 
     const session = getSession(req);
     if (!session) {
@@ -3196,15 +3206,6 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/position-advice') return await handlePositionAdvice(url, res);
     if (url.pathname === '/api/watchlist') return await handleWatchlist(url, res);
     if (url.pathname === '/api/search') return await handleSearch(url, res);
-    if (url.pathname === '/api/health') {
-      return json(res, 200, {
-        ok: true,
-        now: new Date().toISOString(),
-        market: marketStatus(),
-        cacheEntries: CACHE.size,
-        ai: { configured: Boolean(AI_API_KEY), model: AI_API_KEY ? AI_MODEL : 'local-fallback' },
-      });
-    }
     if (url.pathname.startsWith('/api/')) return json(res, 404, { error: 'API not found' });
     return await serveStatic(req, res, url.pathname);
   } catch (error) {

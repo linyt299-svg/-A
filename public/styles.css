@@ -3395,8 +3395,17 @@ b, strong {
 .ai-score-ring span {
   margin-top: 3px;
   color: rgba(237, 242, 231, 0.42);
-  font-family: var(--font-num);
+  font-family: inherit;
   font-size: calc(7px + var(--font-boost));
+}
+
+.score-description {
+  position: relative;
+  z-index: 1;
+  margin-top: 12px;
+  color: rgba(237, 242, 231, 0.52);
+  font-size: calc(8px + var(--font-boost));
+  line-height: 1.65;
 }
 
 .ai-stance {
@@ -4282,6 +4291,13 @@ b, strong {
 .dialog-score span {
   color: rgba(238, 242, 233, 0.42);
   font-size: calc(8px + var(--font-boost));
+}
+
+.dialog-score-description {
+  margin: 10px 0 0;
+  color: rgba(238, 242, 233, 0.5);
+  font-size: calc(9px + var(--font-boost));
+  line-height: 1.6;
 }
 
 .dialog-section {

@@ -242,7 +242,8 @@
         <div class="candidate-score">
           <span class="candidate-rank">第 ${stock.rank || index + 1} 名</span>
           <b>${Math.round(num(stock.score))}</b>
-          <span>得分 · 置信 ${Math.round(num(stock.confidence))}%</span>
+          <span>日内动能分</span>
+          <span>置信 ${Math.round(num(stock.confidence))}%</span>
         </div>
       </div>`;
   }
@@ -277,8 +278,8 @@
     const next = data.pulse && data.pulse.nextTradingDay;
     $('#tomorrowTitle').textContent = next ? `${next.label}观察票 · ${next.short} ${next.weekday}` : '明日观察票';
     $('#trendMethod').textContent = data.methodology
-      ? `日内：${data.methodology.intraday} 明日：${data.methodology.tomorrow}`
-      : '模型综合价格、量能、资金与流动性。';
+      ? data.methodology.scoreDescription || `日内动能筛选分：${data.methodology.intraday}`
+      : '日内动能筛选分：主要看当天涨幅、涨速、换手、量比、收盘位置、当日主力资金和流动性，用于在活跃股票池中排名。';
     $('#trendDisclaimer').textContent = data.methodology && data.methodology.disclaimer
       ? data.methodology.disclaimer
       : '仅作信息参考，不构成投资建议。';
@@ -401,7 +402,7 @@
       : '';
     return `
       <div class="rule-block"><h5>排名规则</h5><p>${escapeHtml(rule.rank)}</p></div>
-      <div class="rule-block"><h5>得分公式</h5><p class="rule-formula">${escapeHtml(rule.score)}</p>${factors}</div>
+      <div class="rule-block"><h5>日内动能分公式</h5><p class="rule-formula">${escapeHtml(rule.score)}</p>${factors}</div>
       <div class="rule-block"><h5>入围门槛</h5><p>${escapeHtml(rule.threshold)}</p></div>
       <div class="rule-block"><h5>置信度</h5><p>${escapeHtml(rule.confidence)}</p></div>`;
   }

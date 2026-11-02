@@ -7,6 +7,7 @@ ENV NODE_ENV=production \
 
 COPY package.json server.js ./
 COPY public ./public
+COPY data/snapshots/market-overview.json ./data/snapshots/market-overview.json
 
 EXPOSE 4173
 CMD ["node", "server.js"]

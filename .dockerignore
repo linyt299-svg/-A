@@ -1,5 +1,6 @@
 .git
-data
+data/snapshots/*
+!data/snapshots/market-overview.json
 README.md
 start.ps1
 *.log

@@ -867,6 +867,61 @@ async function fetchMarketList({ fs, fid = 'f3', size = 40, order = '1', retries
   return rows;
 }
 
+async function fetchSinaMarketList({ fid = 'f3', size = 40 }) {
+  const sortByFid = {
+    f3: 'changepercent',
+    f6: 'amount',
+    f62: 'turnoverratio',
+  };
+  const sort = sortByFid[fid] || 'changepercent';
+  const url =
+    `https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData` +
+    `?page=1&num=${size}&sort=${sort}&asc=0&node=hs_a&symbol=&_s_r_a=page`;
+  const rows = await fetchJson(url, {
+    headers: SINA_HEADERS,
+    timeout: 10_000,
+    retries: 1,
+  });
+  if (!Array.isArray(rows) || !rows.length) throw new Error('No Sina market list data');
+  return rows.map((item) => {
+    const price = num(item.trade);
+    const previous = num(item.settlement);
+    return {
+      f2: price,
+      f3: num(item.changepercent),
+      f4: Number.isFinite(Number(item.pricechange)) ? num(item.pricechange) : price - previous,
+      f5: num(item.volume),
+      f6: num(item.amount),
+      f7: previous ? ((num(item.high) - num(item.low)) / previous) * 100 : null,
+      f8: num(item.turnoverratio),
+      f9: Number.isFinite(Number(item.per)) ? num(item.per) : null,
+      f12: String(item.code || ''),
+      f13: /^6|^9/.test(String(item.code || '')) ? 1 : 0,
+      f14: String(item.name || '—'),
+      f15: num(item.high),
+      f16: num(item.low),
+      f17: num(item.open),
+      f18: previous,
+      f20: Number.isFinite(Number(item.mktcap)) ? num(item.mktcap) * 10_000 : null,
+      f21: Number.isFinite(Number(item.nmc)) ? num(item.nmc) * 10_000 : null,
+    };
+  });
+}
+
+async function fetchMarketListResilient(options) {
+  try {
+    return await fetchMarketList(options);
+  } catch (eastmoneyError) {
+    try {
+      const rows = await fetchSinaMarketList(options);
+      console.warn('[market-overview] Eastmoney list unavailable; using Sina fallback', options.fid, eastmoneyError.message);
+      return rows;
+    } catch (sinaError) {
+      throw new Error(`market lists unavailable (Eastmoney: ${eastmoneyError.message}; Sina: ${sinaError.message})`);
+    }
+  }
+}
+
 function mapMarketStock(item) {
   const value = (field) => {
     const n = Number(item && item[field]);
@@ -1847,9 +1902,9 @@ async function buildMarketOverview({ refresh = false } = {}) {
     capture('全市场涨跌家数', cached('aShare:breadth', 5 * 60_000, fetchAShareBreadth, { stale: refresh }), null),
     capture('行业板块', cached('overview:industry', 90_000, () => fetchBoardList('industry', 14), { stale: refresh }), []),
     capture('概念热点', cached('overview:concept', 90_000, () => fetchBoardList('concept', 14), { stale: refresh }), []),
-    capture('成交活跃股', cached('overview:stocks:amount', 60_000, () => fetchMarketList({ fs: A_SHARE_LIST_FILTER, fid: 'f6', size: 55, retries: 0 }), { stale: refresh }), []),
-    capture('涨幅活跃股', cached('overview:stocks:gain', 60_000, () => fetchMarketList({ fs: A_SHARE_LIST_FILTER, fid: 'f3', size: 55, retries: 0 }), { stale: refresh }), []),
-    capture('资金活跃股', cached('overview:stocks:flow', 60_000, () => fetchMarketList({ fs: A_SHARE_LIST_FILTER, fid: 'f62', size: 55, retries: 0 }), { stale: refresh }), []),
+    capture('成交活跃股', cached('overview:stocks:amount', 60_000, () => fetchMarketListResilient({ fs: A_SHARE_LIST_FILTER, fid: 'f6', size: 55, retries: 0 }), { stale: refresh }), []),
+    capture('涨幅活跃股', cached('overview:stocks:gain', 60_000, () => fetchMarketListResilient({ fs: A_SHARE_LIST_FILTER, fid: 'f3', size: 55, retries: 0 }), { stale: refresh }), []),
+    capture('资金活跃股', cached('overview:stocks:flow', 60_000, () => fetchMarketListResilient({ fs: A_SHARE_LIST_FILTER, fid: 'f62', size: 55, retries: 0 }), { stale: refresh }), []),
   ]);
 
   let marketGroups = Array.isArray(marketsRaw) ? marketsRaw : marketsRaw.groups;

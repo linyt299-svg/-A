@@ -1,6 +1,7 @@
 node_modules/
 .tools/
-data/snapshots/
+data/snapshots/*
+!data/snapshots/market-overview.json
 *.log
 .env
 .DS_Store

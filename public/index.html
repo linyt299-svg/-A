@@ -444,25 +444,6 @@
             </div>
           </section>
 
-          <!-- Stock news sentiment -->
-          <section class="panel sentiment-panel" id="sentimentTimeline">
-            <div class="panel-head">
-              <div>
-                <p class="panel-kicker">NEWS SENTIMENT</p>
-                <div class="title-with-badge">
-                  <h2>个股舆情时间轴</h2>
-                  <span class="signal-badge neutral" id="newsTimelineBadge">中性</span>
-                </div>
-              </div>
-              <span class="soft-badge" id="newsTimelineCount">—</span>
-            </div>
-            <div class="sentiment-timeline" id="sentimentTimelineList">
-              <div class="ann-skeleton"></div>
-              <div class="ann-skeleton"></div>
-            </div>
-            <p class="news-disclaimer" id="stockNewsDisclaimer">资讯由AI抓取分析，不构成投资建议，请注意风险。</p>
-          </section>
-
           <!-- Global markets -->
           <section class="panel global-panel" id="global">
             <div class="panel-head">
@@ -575,13 +556,22 @@
 
           <div class="position-block">
             <div class="position-head">
-              <span>AI 持仓量化建议</span>
-              <button class="position-edit" id="positionEditBtn" type="button">录入持仓</button>
+              <div>
+                <span>AI 持仓量化建议</span>
+                <small>实时持仓 · 交易流水驱动</small>
+              </div>
+              <button class="position-edit" id="positionEditBtn" type="button">记一笔</button>
             </div>
             <div class="position-empty" id="positionEmpty">
-              录入成本价与持股数，AI 会结合明日预判生成加减仓、止盈止损建议。
+              <b>先录入当前持仓，或直接记录一笔交易</b>
+              <span>已有持仓只需填写成本价和股数；之后按买入 / 卖出价格与股数记账，无需重复录入。</span>
             </div>
             <div class="position-filled is-hidden" id="positionFilled">
+              <div class="position-signal-strip">
+                <div><span>实时价</span><b id="positionLivePrice">—</b></div>
+                <div><span>舆情</span><b id="positionSentiment">—</b></div>
+                <div><span>综合分</span><b id="positionComposite">—</b></div>
+              </div>
               <div class="position-line">
                 <span>成本 <b id="positionCost">—</b></span>
                 <span>持股 <b id="positionShares">—</b></span>
@@ -595,13 +585,19 @@
                 </div>
                 <p id="positionAdvice">—</p>
                 <div class="position-kpis">
-                  <div><span>浮动盈亏</span><b id="positionPnl">—</b></div>
+                  <div><span>累计盈亏</span><b id="positionPnl">—</b></div>
                   <div><span>持仓市值</span><b id="positionValue">—</b></div>
                   <div><span>风险敞口</span><b id="positionRisk">—</b></div>
                 </div>
                 <p class="position-plan" id="positionPlan">—</p>
                 <p class="position-risk" id="positionRiskNote">—</p>
               </div>
+              <div class="position-ledger-summary">
+                <div><span>累计买入</span><b id="positionTotalBuy">—</b></div>
+                <div><span>累计卖出</span><b id="positionTotalSell">—</b></div>
+                <div><span>净投入</span><b id="positionNetInvested">—</b></div>
+              </div>
+              <div class="position-history" id="positionHistory"></div>
             </div>
           </div>
 
@@ -617,6 +613,29 @@
           </div>
           <p class="forecast-risk" id="forecastRisk">—</p>
           <p class="forecast-disclaimer">量化估算，仅作信息参考，不构成投资建议。</p>
+        </section>
+
+        <section class="panel sentiment-panel sentiment-rail-card" id="sentimentTimeline">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">NEWS PULSE</p>
+              <div class="title-with-badge">
+                <h2>个股舆情时间轴</h2>
+                <span class="signal-badge neutral" id="newsTimelineBadge">中性</span>
+              </div>
+            </div>
+            <span class="soft-badge" id="newsTimelineCount">—</span>
+          </div>
+          <div class="sentiment-overview" id="sentimentOverview">
+            <div><span>利好</span><b>—</b></div>
+            <div><span>中性</span><b>—</b></div>
+            <div><span>利空</span><b>—</b></div>
+          </div>
+          <div class="sentiment-timeline" id="sentimentTimelineList">
+            <div class="ann-skeleton"></div>
+            <div class="ann-skeleton"></div>
+          </div>
+          <p class="news-disclaimer" id="stockNewsDisclaimer">资讯由AI抓取分析，不构成投资建议，请注意风险。</p>
         </section>
 
         <section class="panel mini-consensus" aria-label="机构快照">
@@ -762,39 +781,46 @@
     </div>
   </dialog>
 
-  <!-- Position input dialog -->
+  <!-- Position transaction dialog -->
   <dialog class="position-dialog" id="positionDialog" aria-labelledby="positionDialogTitle">
     <form class="position-form" id="positionForm">
       <div class="position-dialog-head">
         <div>
-          <p class="panel-kicker">POSITION INPUT</p>
-          <h2 id="positionDialogTitle">录入我的持仓</h2>
+          <p class="panel-kicker">POSITION LEDGER</p>
+          <h2 id="positionDialogTitle">记录一笔交易</h2>
         </div>
         <button class="icon-button" id="positionCloseBtn" type="button" aria-label="关闭">
           <svg class="icon"><use href="#i-close"/></svg>
         </button>
       </div>
-      <p class="position-dialog-tip">填写后，AI 会把成本、仓位、支撑压力与明日预判结合起来，给出持有 / 加仓 / 减仓 / 止盈止损建议。</p>
+      <p class="position-dialog-tip">第一次使用可直接录入已有持仓；以后只记录每笔买入 / 卖出的成交价和股数，系统会持续更新成本与持股。</p>
+      <div class="transaction-type" role="radiogroup" aria-label="记录类型">
+        <label><input type="radio" name="positionSide" value="opening" checked /><span>已有持仓</span></label>
+        <label><input type="radio" name="positionSide" value="buy" /><span>买入</span></label>
+        <label><input type="radio" name="positionSide" value="sell" /><span>卖出</span></label>
+      </div>
       <div class="position-fields">
         <label>
-          <span>持仓成本价（元）</span>
-          <input id="posCost" type="number" min="0.01" step="0.01" placeholder="例如 1280.00" required />
+          <span id="posPriceLabel">持仓成本价（元）</span>
+          <input id="posTradePrice" type="number" min="0.01" step="0.01" placeholder="例如 12.50" required />
         </label>
         <label>
-          <span>持股数量（股）</span>
-          <input id="posShares" type="number" min="1" step="1" placeholder="例如 500" required />
+          <span id="posSharesLabel">持仓股数</span>
+          <input id="posShares" type="number" min="1" step="1" placeholder="例如 1000" required />
         </label>
         <label class="full">
-          <span>总资金（元，可选，用于计算仓位）</span>
+          <span>账户总资金（元，可选，用于计算仓位）</span>
           <input id="posCapital" type="number" min="0" step="1000" placeholder="例如 2000000" />
         </label>
       </div>
-      <p class="position-dialog-hint">不填总资金也可以生成持仓建议，但无法计算仓位占比。持仓数据仅保存在你的浏览器本地。</p>
+      <div class="transaction-preview opening" id="transactionPreview">录入当前持仓后，后续只需继续记买卖流水</div>
+      <div class="dialog-ledger" id="positionDialogHistory"></div>
+      <p class="position-dialog-hint">成交金额由“价格 × 股数”自动计算；不填总资金仍可生成建议。全部个股记录会持续保存在当前浏览器，只有点击“清空记录”才会移除。</p>
       <div class="position-dialog-actions">
-        <button class="position-clear" id="positionClearBtn" type="button">清空持仓</button>
+        <button class="position-clear" id="positionClearBtn" type="button">清空记录</button>
         <span class="position-action-spacer"></span>
         <button class="position-cancel" id="positionCancelBtn" type="button">取消</button>
-        <button class="position-submit" type="submit">生成 AI 建议</button>
+        <button class="position-submit" type="submit">保存并更新建议</button>
       </div>
     </form>
   </dialog>

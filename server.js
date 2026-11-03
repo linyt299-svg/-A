@@ -2387,15 +2387,25 @@ function computeForecast({ quote, technical, flow, markets, composite, levels })
 }
 
 function computePositionAdvice(payload, position) {
-  const { quote, technical, ai } = payload;
+  const { quote, technical, ai, news } = payload;
   const forecast = ai.forecast;
   const price = quote.price;
   const cost = Number(position.cost);
   const shares = Math.max(1, Math.round(Number(position.shares)));
   const capital = Number(position.capital) > 0 ? Number(position.capital) : null;
+  const totalBuy = Math.max(0, Number(position.totalBuy) || cost * shares);
+  const totalSell = Math.max(0, Number(position.totalSell) || 0);
+  const netInvested = totalBuy - totalSell;
+  const latestSide = position.latestSide === 'sell' ? 'sell' : position.latestSide === 'buy' ? 'buy' : null;
+  const latestAmount = Math.max(0, Number(position.latestAmount) || 0);
+  const sentimentScore = clamp(num(news && news.score, 50), 0, 100);
+  const sentimentLabel = news && news.sentiment || '中性';
+  const compositeScore = clamp(num(ai.composite, 50), 0, 100);
   const marketValue = price * shares;
   const costValue = cost * shares;
   const pnl = marketValue - costValue;
+  const totalPnl = marketValue + totalSell - totalBuy;
+  const totalPnlPct = totalBuy > 0 ? round(totalPnl / totalBuy * 100) : null;
   const pnlPct = cost > 0 ? round((price / cost - 1) * 100) : 0;
   const weight = capital ? round((marketValue / capital) * 100) : null;
   const targetPct = forecast.quant.positionPct || 30;
@@ -2411,8 +2421,11 @@ function computePositionAdvice(payload, position) {
 
   let action = '持有观察';
   let tone = 'neutral';
-  if (price <= stop && ai.composite < 52) {
+  if (price <= stop && compositeScore < 52) {
     action = '止损/减仓';
+    tone = 'down';
+  } else if (sentimentScore < 42 && compositeScore < 50) {
+    action = '舆情转弱 · 减仓';
     tone = 'down';
   } else if (pnlPct >= 18 && (technical.rsi.rsi6 >= 70 || ai.levels.resistanceGap <= 2.5)) {
     action = '分批止盈';
@@ -2420,13 +2433,13 @@ function computePositionAdvice(payload, position) {
   } else if (weight != null && weight > targetPct + 15) {
     action = '仓位偏重 · 减仓';
     tone = 'warn';
-  } else if (weight != null && weight < targetPct - 15 && ai.composite >= 58 && riskReward != null && riskReward >= 1.25) {
+  } else if (weight != null && weight < targetPct - 15 && compositeScore >= 58 && sentimentScore >= 48 && riskReward != null && riskReward >= 1.25) {
     action = '仓位偏低 · 加仓';
     tone = 'up';
-  } else if (ai.composite >= 60 && pnlPct >= 0) {
+  } else if (compositeScore >= 60 && sentimentScore >= 48 && pnlPct >= 0) {
     action = '继续持有';
     tone = 'up';
-  } else if (ai.composite < 42) {
+  } else if (compositeScore < 42 || sentimentScore < 35) {
     action = '减仓 / 防守';
     tone = 'down';
   }
@@ -2451,13 +2464,17 @@ function computePositionAdvice(payload, position) {
   const positionText = weight != null ? `，仓位约 ${weight.toFixed(1)}%` : '';
   const summary =
     `当前持有 ${shares.toLocaleString('zh-CN')} 股，成本 ${fmtLevel(cost)} 元，现价 ${fmtLevel(price)} 元，` +
-    `浮动${pnl >= 0 ? '盈利' : '亏损'} ${fmtPct(pnlPct)}${positionText}。`;
+    `浮动${pnl >= 0 ? '盈利' : '亏损'} ${fmtPct(pnlPct)}${positionText}；` +
+    `累计买入 ${fmtYi(totalBuy)}、卖出 ${fmtYi(totalSell)}，当前消息面「${sentimentLabel}」${sentimentScore.toFixed(0)} 分，综合研判 ${compositeScore.toFixed(0)} 分。`;
 
   let advice;
   let plan;
   if (action === '止损/减仓') {
-    advice = `AI 建议${action}：现价已触及风险位 ${fmtLevel(stop)}，且综合研判分偏弱。先减仓 ${suggestedShares} 股，剩余仓位以 ${fmtLevel(defense)} 为最后防线。`;
+    advice = `AI 建议${action}：实时价 ${fmtLevel(price)} 已触及风险位 ${fmtLevel(stop)}，综合研判 ${compositeScore.toFixed(0)} 分、舆情 ${sentimentScore.toFixed(0)} 分均不支持继续承受当前风险。先减仓 ${suggestedShares} 股，剩余仓位以 ${fmtLevel(defense)} 为最后防线。`;
     plan = `减仓 ${suggestedShares} 股，剩余 ${Math.max(0, shares - suggestedShares)} 股`;
+  } else if (action === '舆情转弱 · 减仓') {
+    advice = `AI 建议主动收缩：消息面已降至 ${sentimentScore.toFixed(0)} 分，综合研判仅 ${compositeScore.toFixed(0)} 分。即使实时价尚未触及止损位，也建议先减仓 ${suggestedShares} 股，避免舆情继续发酵放大回撤。`;
+    plan = `减仓 ${suggestedShares} 股，观察舆情能否重回 45 分以上`;
   } else if (action === '分批止盈') {
     advice = `AI 建议分批止盈：浮盈已达到 ${fmtPct(pnlPct)}，且接近压力位 ${fmtLevel(resistance)}。建议先减仓 ${suggestedShares} 股，保留底仓观察突破。`;
     plan = `止盈 ${suggestedShares} 股，剩余 ${Math.max(0, shares - suggestedShares)} 股`;
@@ -2465,15 +2482,15 @@ function computePositionAdvice(payload, position) {
     advice = `AI 建议降低仓位：当前${weight != null ? `仓位 ${weight.toFixed(1)}% 高于模型参考的 ${targetPct}%` : `持仓风险偏高`}。建议减仓 ${suggestedShares} 股，把仓位降至模型舒适区。`;
     plan = `减仓 ${suggestedShares} 股，剩余 ${Math.max(0, shares - suggestedShares)} 股`;
   } else if (action.includes('加仓')) {
-    advice = `AI 建议小幅加仓：当前仓位低于模型参考的 ${targetPct}%，但只在回踩 ${fmtLevel(support)} 附近或放量站稳 ${fmtLevel(resistance)} 后执行，建议加 ${suggestedShares} 股。`;
+    advice = `AI 建议小幅加仓：当前仓位低于模型参考的 ${targetPct}%，综合研判 ${compositeScore.toFixed(0)} 分、舆情 ${sentimentScore.toFixed(0)} 分形成正向共振；但只在回踩 ${fmtLevel(support)} 附近或放量站稳 ${fmtLevel(resistance)} 后执行，建议加 ${suggestedShares} 股。`;
     plan = `加仓 ${suggestedShares} 股，目标仓位约 ${targetPct}%`;
   } else if (action === '继续持有') {
     advice = riskReward != null && riskReward < 1.2
       ? `AI 建议继续持有但不加仓：趋势与资金面偏正面，但当前盈亏比仅 ${riskReward}:1，追高性价比不足。防守位 ${fmtLevel(defense)}，等待回踩 ${fmtLevel(support)} 再评估。`
-      : `AI 建议继续持有：趋势与资金面偏正面，防守位上移至 ${fmtLevel(defense)}；若放量站稳 ${fmtLevel(resistance)} 可保持，若跌破防守位再减仓。`;
+      : `AI 建议继续持有：实时价 ${fmtLevel(price)} 下，综合研判 ${compositeScore.toFixed(0)} 分、舆情 ${sentimentScore.toFixed(0)} 分仍偏正面，防守位上移至 ${fmtLevel(defense)}；若放量站稳 ${fmtLevel(resistance)} 可保持，若跌破防守位再减仓。`;
     plan = `持有 ${shares} 股，防守 ${fmtLevel(defense)}`;
   } else {
-    advice = `AI 建议持有观察：当前多空信号不够一致，暂不加仓；以 ${fmtLevel(support)} 为观察支撑、${fmtLevel(resistance)} 为第一压力，跌破 ${fmtLevel(defense)} 再防守。`;
+    advice = `AI 建议持有观察：实时价、舆情 ${sentimentScore.toFixed(0)} 分与综合研判 ${compositeScore.toFixed(0)} 分尚未形成一致信号，暂不加仓；以 ${fmtLevel(support)} 为观察支撑、${fmtLevel(resistance)} 为第一压力，跌破 ${fmtLevel(defense)} 再防守。`;
     plan = `持有 ${shares} 股，等待方向确认`;
   }
 
@@ -2484,7 +2501,7 @@ function computePositionAdvice(payload, position) {
   return {
     action,
     tone,
-    confidence: clamp(forecast.confidence + (weight != null && weight > targetPct + 15 ? -5 : 0), 45, 75),
+    confidence: clamp(forecast.confidence + (weight != null && weight > targetPct + 15 ? -5 : 0) + (Math.abs(sentimentScore - 50) >= 15 ? 3 : 0), 45, 78),
     summary,
     advice,
     plan,
@@ -2495,6 +2512,8 @@ function computePositionAdvice(payload, position) {
       costValue: round(costValue, 0),
       pnl: round(pnl, 0),
       pnlPct,
+      totalPnl: round(totalPnl, 0),
+      totalPnlPct,
       weight,
       targetPct,
       riskAmount: round(riskAmount, 0),
@@ -2503,9 +2522,18 @@ function computePositionAdvice(payload, position) {
       defense,
       support,
       resistance,
+      livePrice: price,
+      sentimentScore: round(sentimentScore, 0),
+      sentimentLabel,
+      compositeScore: round(compositeScore, 0),
+      totalBuy: round(totalBuy, 0),
+      totalSell: round(totalSell, 0),
+      netInvested: round(netInvested, 0),
+      latestSide,
+      latestAmount: round(latestAmount, 0),
     },
-    riskNote: `${positionRisk}${riskReward != null ? ` 当前盈亏比约 ${riskReward}:1。` : ''}`,
-    modelNote: 'AI 持仓建议由本地量化模型结合成本、仓位、明日预判与支撑压力生成，仅作信息参考。',
+    riskNote: `${positionRisk}${riskReward != null ? ` 当前盈亏比约 ${riskReward}:1。` : ''}${latestSide ? ` 最近一笔为${latestSide === 'buy' ? '买入' : '卖出'} ${fmtYi(latestAmount)}，已纳入交易节奏判断。` : ''}`,
+    modelNote: 'AI 持仓建议由本地量化模型结合交易流水、实时股价、舆情、综合研判、仓位与支撑压力生成，仅作信息参考。',
   };
 }
 
@@ -3287,6 +3315,10 @@ async function handlePositionAdvice(url, res) {
   const cost = Number(url.searchParams.get('cost'));
   const shares = Number(url.searchParams.get('shares'));
   const capital = Number(url.searchParams.get('capital'));
+  const totalBuy = Number(url.searchParams.get('totalBuy'));
+  const totalSell = Number(url.searchParams.get('totalSell'));
+  const latestSide = String(url.searchParams.get('latestSide') || '');
+  const latestAmount = Number(url.searchParams.get('latestAmount'));
   if (!code) return json(res, 400, { error: '请输入 6 位股票代码' });
   if (!Number.isFinite(cost) || cost <= 0) return json(res, 400, { error: '请输入有效的持仓成本价' });
   if (!Number.isFinite(shares) || shares <= 0) return json(res, 400, { error: '请输入有效的持股数量' });
@@ -3296,6 +3328,10 @@ async function handlePositionAdvice(url, res) {
       cost,
       shares,
       capital: Number.isFinite(capital) && capital > 0 ? capital : null,
+      totalBuy: Number.isFinite(totalBuy) && totalBuy >= 0 ? totalBuy : null,
+      totalSell: Number.isFinite(totalSell) && totalSell >= 0 ? totalSell : null,
+      latestSide,
+      latestAmount: Number.isFinite(latestAmount) && latestAmount >= 0 ? latestAmount : null,
     });
     return json(res, 200, {
       code,

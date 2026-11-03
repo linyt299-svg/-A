@@ -772,30 +772,118 @@
     $('#forecastBasis').textContent = forecast.basis || '—';
     $('#forecastNarrative').textContent = forecast.narrative || 'AI 正在生成预判解读…';
     const quant = forecast.quant || {};
-    $('#quantPosition').textContent = quant.position || '—';
-    $('#quantTarget').textContent = quant.target || '—';
+    const position = readStoredPosition(state.code);
+    const hasPosition = Boolean(position && position.shares > 0);
+    $('#quantPosition').textContent = hasPosition ? (quant.position || '—') : '0%（未持仓）';
+    $('#quantTarget').textContent = hasPosition ? (quant.target || '—') : '建仓后生成';
     $('#quantTrigger').textContent = quant.trigger || '—';
-    $('#quantEntry').textContent = quant.entry || '—';
-    $('#quantStop').textContent = quant.stop || '—';
-    $('#forecastRisk').textContent = quant.riskNote || '—';
+    $('#quantEntry').textContent = hasPosition ? (quant.entry || '—') : '当前为空仓，仅观察触发条件；实际建仓后再生成持仓目标。';
+    $('#quantStop').textContent = hasPosition ? (quant.stop || '—') : '未持仓，无需设置持仓防守位';
+    $('#forecastRisk').textContent = hasPosition ? (quant.riskNote || '—') : '当前未持仓，不展示参考仓位和第一目标；市场信号仅供观察。';
   }
 
   function positionStorageKey(code) {
+    return `guanlan.position.v2.${code}`;
+  }
+
+  function legacyPositionStorageKey(code) {
     return `guanlan.position.v1.${code}`;
+  }
+
+  function summarizePositionRecord(record) {
+    const rawOpening = record && record.opening;
+    const openingCost = Number(rawOpening && rawOpening.cost);
+    const openingShares = Math.max(0, Math.round(Number(rawOpening && rawOpening.shares)));
+    const opening = openingCost > 0 && openingShares > 0
+      ? {
+        cost: openingCost,
+        shares: openingShares,
+        createdAt: rawOpening.createdAt || new Date().toISOString(),
+      }
+      : null;
+    const transactions = Array.isArray(record && record.transactions)
+      ? record.transactions
+        .filter((item) => item && ['buy', 'sell'].includes(item.side))
+        .map((item) => ({
+          id: String(item.id || `${item.createdAt || Date.now()}-${Math.random()}`),
+          side: item.side,
+          price: Number(item.price),
+          shares: Math.max(0, Math.round(Number(item.shares))),
+          createdAt: item.createdAt || new Date().toISOString(),
+        }))
+        .filter((item) => item.price > 0 && item.shares > 0)
+        .map((item) => ({ ...item, amount: item.price * item.shares }))
+      : [];
+    let shares = opening ? opening.shares : 0;
+    let costBasis = opening ? opening.cost * opening.shares : 0;
+    let realizedPnl = 0;
+    let totalBuy = costBasis;
+    let totalSell = 0;
+    transactions.forEach((item) => {
+      if (item.side === 'buy') {
+        shares += item.shares;
+        costBasis += item.price * item.shares;
+        totalBuy += item.amount;
+        return;
+      }
+      const soldShares = Math.min(shares, item.shares);
+      const averageCost = shares > 0 ? costBasis / shares : 0;
+      realizedPnl += (item.price - averageCost) * soldShares;
+      costBasis = Math.max(0, costBasis - averageCost * soldShares);
+      shares = Math.max(0, shares - soldShares);
+      totalSell += item.amount;
+    });
+    const capital = Number(record && record.capital);
+    return {
+      cost: shares > 0 ? costBasis / shares : 0,
+      shares,
+      capital: Number.isFinite(capital) && capital > 0 ? capital : null,
+      opening,
+      transactions,
+      totalBuy,
+      totalSell,
+      netInvested: totalBuy - totalSell,
+      realizedPnl,
+      latestTransaction: transactions.at(-1) || null,
+    };
+  }
+
+  function isValidTransactionSequence(transactions, openingShares = 0) {
+    let shares = Math.max(0, Math.round(Number(openingShares)) || 0);
+    return transactions.every((item) => {
+      if (item.side === 'buy') {
+        shares += item.shares;
+        return true;
+      }
+      if (item.shares > shares) return false;
+      shares -= item.shares;
+      return true;
+    });
   }
 
   function readStoredPosition(code) {
     try {
-      const raw = JSON.parse(localStorage.getItem(positionStorageKey(code)) || 'null');
-      const cost = Number(raw && raw.cost);
-      const shares = Number(raw && raw.shares);
-      if (!Number.isFinite(cost) || cost <= 0 || !Number.isFinite(shares) || shares <= 0) return null;
-      const capital = Number(raw.capital);
-      return {
-        cost,
-        shares: Math.round(shares),
-        capital: Number.isFinite(capital) && capital > 0 ? capital : null,
-      };
+      let raw = JSON.parse(localStorage.getItem(positionStorageKey(code)) || 'null');
+      if (!raw) {
+        const legacy = JSON.parse(localStorage.getItem(legacyPositionStorageKey(code)) || 'null');
+        const legacyCost = Number(legacy && legacy.cost);
+        const legacyShares = Math.round(Number(legacy && legacy.shares));
+        if (legacyCost > 0 && legacyShares > 0) {
+          raw = {
+            version: 3,
+            capital: Number(legacy.capital) > 0 ? Number(legacy.capital) : null,
+            opening: {
+              cost: legacyCost,
+              shares: legacyShares,
+              createdAt: new Date().toISOString(),
+            },
+            transactions: [],
+          };
+          saveStoredPosition(code, raw);
+        }
+      }
+      const position = summarizePositionRecord(raw);
+      return position.opening || position.transactions.length ? position : null;
     } catch {
       return null;
     }
@@ -805,15 +893,73 @@
     localStorage.setItem(positionStorageKey(code), JSON.stringify(position));
   }
 
+  function transactionTime(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '刚刚';
+    return new Intl.DateTimeFormat('zh-CN', {
+      timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+    }).format(date).replaceAll('/', '.');
+  }
+
+  function transactionRows(position, { dialog = false } = {}) {
+    const records = position
+      ? [
+        ...(position.opening ? [{ ...position.opening, side: 'opening', amount: position.opening.cost * position.opening.shares }] : []),
+        ...position.transactions,
+      ]
+      : [];
+    if (!records.length) return dialog ? '<p class="dialog-ledger-empty">暂无持仓或交易记录</p>' : '';
+    const visibleRecords = dialog ? records.slice().reverse() : records.slice().reverse().slice(0, 4);
+    return visibleRecords.map((item) => `
+      <div class="transaction-row ${item.side}">
+        <span class="transaction-side">${item.side === 'opening' ? '持' : item.side === 'buy' ? '买' : '卖'}</span>
+        <span class="transaction-main"><b>${item.side === 'opening' ? '已有持仓' : item.side === 'buy' ? '买入' : '卖出'} ${item.shares.toLocaleString('zh-CN')} 股</b><small>${transactionTime(item.createdAt)} · ${fmtPrice(item.side === 'opening' ? item.cost : item.price)} 元 / 股 · ${fmtMoney(item.amount)}</small></span>
+      </div>`).join('');
+  }
+
+  function updateTransactionPreview() {
+    const price = Number($('#posTradePrice').value);
+    const shares = Math.max(0, Math.round(Number($('#posShares').value)));
+    const side = $('input[name="positionSide"]:checked').value;
+    const position = readStoredPosition(state.code);
+    const preview = $('#transactionPreview');
+    preview.className = `transaction-preview ${side}`;
+    if (!(price > 0) || !shares) {
+      preview.textContent = side === 'opening' ? '填写成本价和当前持股数' : '填写成交价和股数';
+      return;
+    }
+    const amount = price * shares;
+    if (side === 'opening') {
+      preview.textContent = `当前持仓 ${shares.toLocaleString('zh-CN')} 股 · 成本金额 ${fmtMoney(amount)}`;
+      return;
+    }
+    const suffix = side === 'sell' && position ? ` · 当前可卖 ${position.shares.toLocaleString('zh-CN')} 股` : '';
+    preview.textContent = `${side === 'buy' ? '买入' : '卖出'} ${shares.toLocaleString('zh-CN')} 股 · 成交金额 ${fmtMoney(amount)}${suffix}`;
+  }
+
+  function updatePositionMode({ prefill = false } = {}) {
+    const side = $('input[name="positionSide"]:checked').value;
+    const position = readStoredPosition(state.code);
+    $('#posPriceLabel').textContent = side === 'opening' ? '持仓成本价（元）' : `${side === 'buy' ? '买入' : '卖出'}价格（元）`;
+    $('#posSharesLabel').textContent = side === 'opening' ? '当前持股数' : `${side === 'buy' ? '买入' : '卖出'}股数`;
+    if (prefill || side === 'opening') {
+      const opening = side === 'opening' && position ? position.opening : null;
+      $('#posTradePrice').value = opening ? opening.cost : state.data && state.data.quote ? state.data.quote.price : '';
+      $('#posShares').value = opening ? opening.shares : '';
+    }
+    updateTransactionPreview();
+  }
+
   function openPositionDialog() {
     const position = readStoredPosition(state.code);
-    $('#posCost').value = position ? position.cost : '';
-    $('#posShares').value = position ? position.shares : '';
+    $(`input[name="positionSide"][value="${position ? 'buy' : 'opening'}"]`).checked = true;
     $('#posCapital').value = position && position.capital ? position.capital : '';
+    $('#positionDialogHistory').innerHTML = transactionRows(position, { dialog: true });
+    updatePositionMode({ prefill: true });
     const dialog = $('#positionDialog');
     if (typeof dialog.showModal === 'function') dialog.showModal();
     else dialog.setAttribute('open', '');
-    setTimeout(() => $('#posCost').focus(), 50);
+    setTimeout(() => $('#posTradePrice').focus(), 50);
   }
 
   function closePositionDialog() {
@@ -830,6 +976,10 @@
       cost: String(position.cost),
       shares: String(position.shares),
       capital: position.capital ? String(position.capital) : '',
+      totalBuy: String(position.totalBuy),
+      totalSell: String(position.totalSell),
+      latestSide: position.latestTransaction ? position.latestTransaction.side : '',
+      latestAmount: position.latestTransaction ? String(position.latestTransaction.amount) : '',
     });
     $('#positionAction').textContent = 'AI 计算中…';
     $('#positionConfidence').textContent = '';
@@ -843,7 +993,7 @@
         ...payload.advice,
         code,
         price: payload.price,
-        _key: `${code}:${position.cost}:${position.shares}:${position.capital || 0}:${state.data.quote.price}`,
+        _key: `${code}:${position.cost}:${position.shares}:${position.capital || 0}:${position.totalBuy}:${position.totalSell}:${state.data.quote.price}`,
       };
       renderPositionAdvice(payload.advice, position);
       updateCopilotContext();
@@ -859,6 +1009,8 @@
   function renderPositionAdvice(advice, position) {
     const stats = advice.stats || {};
     const tone = advice.tone || 'neutral';
+    const displayedPnlPct = stats.totalPnlPct != null ? stats.totalPnlPct : stats.pnlPct;
+    const displayedPnl = stats.totalPnl != null ? stats.totalPnl : stats.pnl;
     $('#positionAction').textContent = advice.action || '持有观察';
     $('#positionAction').className = tone;
     $('#positionConfidence').textContent = advice.confidence ? `置信度 ${advice.confidence}%` : '';
@@ -866,9 +1018,9 @@
     $('#positionCost').textContent = fmtPrice(stats.cost ?? position.cost);
     $('#positionShares').textContent = Number(stats.shares ?? position.shares).toLocaleString('zh-CN');
     $('#positionWeight').textContent = stats.weight != null ? `${stats.weight.toFixed(1)}%` : '—';
-    $('#positionPnl').textContent = fmtPct(stats.pnlPct);
-    $('#positionPnl').className = toneClass(stats.pnlPct);
-    $('#positionPnl').title = `浮动盈亏 ${fmtMoney(stats.pnl, { signed: true })}`;
+    $('#positionPnl').textContent = fmtPct(displayedPnlPct);
+    $('#positionPnl').className = toneClass(displayedPnlPct);
+    $('#positionPnl').title = `累计盈亏 ${fmtMoney(displayedPnl, { signed: true })}`;
     $('#positionValue').textContent = fmtMoney(stats.marketValue);
     $('#positionRisk').textContent = fmtMoney(stats.riskAmount);
     $('#positionRisk').title = stats.riskPct != null ? `占当前总资金 ${stats.riskPct}%` : '';
@@ -876,36 +1028,71 @@
     $('#positionRiskNote').textContent = advice.riskNote || '—';
   }
 
+  function renderPositionLedger(position) {
+    const quote = state.data.quote || {};
+    const news = state.data.news || {};
+    const ai = state.data.ai || {};
+    const sentimentToneClass = num(news.score, 50) >= 60 ? 'up' : num(news.score, 50) < 45 ? 'down' : 'neutral';
+    $('#positionLivePrice').textContent = `${fmtPrice(quote.price)} 元`;
+    $('#positionLivePrice').className = toneClass(quote.changePct);
+    $('#positionSentiment').textContent = `${news.sentiment || '中性'} ${num(news.score, 50).toFixed(0)}`;
+    $('#positionSentiment').className = sentimentToneClass;
+    $('#positionComposite').textContent = `${num(ai.composite, 50).toFixed(0)} 分`;
+    $('#positionComposite').className = num(ai.composite, 50) >= 60 ? 'up' : num(ai.composite, 50) < 45 ? 'down' : 'neutral';
+    $('#positionTotalBuy').textContent = fmtMoney(position.totalBuy);
+    $('#positionTotalSell').textContent = fmtMoney(position.totalSell);
+    $('#positionNetInvested').textContent = fmtMoney(position.netInvested, { signed: true });
+    $('#positionHistory').innerHTML = transactionRows(position);
+  }
+
   function renderPosition() {
     const position = readStoredPosition(state.code);
     const empty = $('#positionEmpty');
     const filled = $('#positionFilled');
     const panel = $('.forecast-panel');
-    if (panel) panel.classList.toggle('has-position', Boolean(position));
+    if (panel) panel.classList.toggle('has-position', Boolean(position && position.shares > 0));
     if (!position) {
       empty.classList.remove('is-hidden');
       filled.classList.add('is-hidden');
-      $('#positionEditBtn').textContent = '录入持仓';
+      $('#positionEditBtn').textContent = '记一笔';
       state.positionAdvice = null;
+      renderForecast();
       return;
     }
 
     empty.classList.add('is-hidden');
     filled.classList.remove('is-hidden');
-    $('#positionEditBtn').textContent = '编辑持仓';
+    $('#positionEditBtn').textContent = '记一笔';
+    renderPositionLedger(position);
     const price = state.data.quote.price;
     const marketValue = price * position.shares;
-    const pnlPct = ((price / position.cost) - 1) * 100;
+    const pnlPct = position.cost > 0 ? ((price / position.cost) - 1) * 100 : 0;
+    const totalPnl = marketValue + position.totalSell - position.totalBuy;
+    const totalPnlPct = position.totalBuy > 0 ? totalPnl / position.totalBuy * 100 : 0;
     const weight = position.capital ? (marketValue / position.capital) * 100 : null;
-    $('#positionCost').textContent = fmtPrice(position.cost);
+    $('#positionCost').textContent = position.shares > 0 ? fmtPrice(position.cost) : '已清仓';
     $('#positionShares').textContent = position.shares.toLocaleString('zh-CN');
     $('#positionWeight').textContent = weight != null ? `${weight.toFixed(1)}%` : '—';
-    $('#positionPnl').textContent = fmtPct(pnlPct);
-    $('#positionPnl').className = toneClass(pnlPct);
+    $('#positionPnl').textContent = fmtPct(totalPnlPct);
+    $('#positionPnl').className = toneClass(totalPnlPct);
+    $('#positionPnl').title = `累计盈亏 ${fmtMoney(totalPnl, { signed: true })}`;
     $('#positionValue').textContent = fmtMoney(marketValue);
     $('#positionRisk').textContent = '—';
 
-    const key = `${state.code}:${position.cost}:${position.shares}:${position.capital || 0}:${price}`;
+    if (position.shares <= 0) {
+      $('#positionAction').textContent = '当前已清仓';
+      $('#positionAction').className = 'neutral';
+      $('#positionConfidence').textContent = '';
+      $('#positionAdvice').textContent = `累计买入 ${fmtMoney(position.totalBuy)}、卖出 ${fmtMoney(position.totalSell)}，当前没有剩余持仓。可继续观察舆情与综合分，出现符合策略的触发信号后再记录买入。`;
+      $('#positionRisk').textContent = '0';
+      $('#positionPlan').textContent = '保持空仓，等待新的交易记录';
+      $('#positionRiskNote').textContent = `按累计买卖金额计算，历史已实现盈亏约 ${fmtMoney(totalPnl, { signed: true })}。`;
+      state.positionAdvice = null;
+      renderForecast();
+      return;
+    }
+
+    const key = `${state.code}:${position.cost}:${position.shares}:${position.capital || 0}:${position.totalBuy}:${position.totalSell}:${price}`;
     if (state.positionAdvice && state.positionAdvice._key === key) {
       renderPositionAdvice(state.positionAdvice, position);
       return;
@@ -920,42 +1107,80 @@
     $('#positionDialog').addEventListener('click', (event) => {
       if (event.target === $('#positionDialog')) closePositionDialog();
     });
+    ['posTradePrice', 'posShares'].forEach((id) => $(`#${id}`).addEventListener('input', updateTransactionPreview));
+    $$('input[name="positionSide"]').forEach((input) => input.addEventListener('change', () => updatePositionMode({ prefill: true })));
     $('#positionClearBtn').addEventListener('click', () => {
+      if (readStoredPosition(state.code) && !window.confirm('确认清空该股票的全部交易记录？此操作不可撤销。')) return;
       localStorage.removeItem(positionStorageKey(state.code));
+      localStorage.removeItem(legacyPositionStorageKey(state.code));
       state.positionAdvice = null;
       state.positionSeq += 1;
       closePositionDialog();
       renderPosition();
       updateCopilotContext();
-      toast('已清空该股票的持仓记录');
+      toast('已清空该股票的交易记录');
     });
     $('#positionForm').addEventListener('submit', (event) => {
       event.preventDefault();
-      const cost = Number($('#posCost').value);
+      const side = $('input[name="positionSide"]:checked').value;
+      const price = Number($('#posTradePrice').value);
       const shares = Math.round(Number($('#posShares').value));
       const capital = Number($('#posCapital').value);
-      if (!Number.isFinite(cost) || cost <= 0) {
-        toast('请输入有效的持仓成本价', 'error');
+      if (!Number.isFinite(price) || price <= 0) {
+        toast(`请输入有效的${side === 'opening' ? '持仓成本价' : '成交价'}`, 'error');
         return;
       }
       if (!Number.isFinite(shares) || shares <= 0) {
-        toast('请输入有效的持股数量', 'error');
+        toast(`请输入有效的${side === 'opening' ? '持股数量' : '交易股数'}`, 'error');
         return;
       }
       if ($('#posCapital').value && (!Number.isFinite(capital) || capital <= 0)) {
         toast('总资金必须大于 0', 'error');
         return;
       }
-      saveStoredPosition(state.code, {
-        cost,
+      const current = readStoredPosition(state.code);
+      const transactions = current ? current.transactions.slice() : [];
+      if (side === 'opening') {
+        if (!isValidTransactionSequence(transactions, shares)) {
+          toast('当前股数不足以覆盖已记录的后续卖出，请核对已有持仓', 'error');
+          return;
+        }
+        saveStoredPosition(state.code, {
+          version: 3,
+          capital: Number.isFinite(capital) && capital > 0 ? capital : current && current.capital,
+          opening: { cost: price, shares, createdAt: current && current.opening ? current.opening.createdAt : new Date().toISOString() },
+          transactions,
+        });
+        state.positionAdvice = null;
+        closePositionDialog();
+        renderPosition();
+        updateCopilotContext();
+        toast('已有持仓已保存，后续只需记录买卖流水');
+        return;
+      }
+      if (side === 'sell' && (!current || shares > current.shares)) {
+        toast(`卖出股数不能超过当前持有的 ${(current ? current.shares : 0).toLocaleString('zh-CN')} 股`, 'error');
+        return;
+      }
+      transactions.push({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        side,
+        amount: price * shares,
+        price,
         shares,
-        capital: Number.isFinite(capital) && capital > 0 ? capital : null,
+        createdAt: new Date().toISOString(),
+      });
+      saveStoredPosition(state.code, {
+        version: 3,
+        capital: Number.isFinite(capital) && capital > 0 ? capital : current && current.capital,
+        opening: current && current.opening,
+        transactions,
       });
       state.positionAdvice = null;
       closePositionDialog();
       renderPosition();
       updateCopilotContext();
-      toast('持仓已保存，AI 正在生成建议');
+      toast(`${side === 'buy' ? '买入' : '卖出'}记录已保存，AI 正在更新建议`);
     });
   }
 
@@ -1383,6 +1608,11 @@
   function renderSentimentTimeline() {
     const news = state.data.news || { score: 50, sentiment: '中性', list: [] };
     const list = Array.isArray(news.list) ? news.list : [];
+    const sentimentCounts = list.reduce((counts, item) => {
+      const tone = sentimentTone(item.impact_score);
+      counts[tone] += 1;
+      return counts;
+    }, { positive: 0, neutral: 0, negative: 0 });
     const badgeTone = num(news.score, 50) >= 60 ? 'up' : num(news.score, 50) < 45 ? 'down' : 'neutral';
     $('#newsTimelineBadge').textContent = news.sentiment || '中性';
     $('#newsTimelineBadge').className = `signal-badge ${badgeTone}`;
@@ -1391,6 +1621,10 @@
     $('#currentNewsSentimentLabel').textContent = news.sentiment || '中性';
     $('#currentNewsSentimentScore').textContent = `${num(news.score, 50).toFixed(0)} 分 · 24h 半衰期`;
     $('#currentNewsSentiment').className = `current-news-sentiment ${badgeTone}`;
+    $('#sentimentOverview').innerHTML = `
+      <div class="positive"><span>利好</span><b>${sentimentCounts.positive}</b></div>
+      <div class="neutral"><span>中性</span><b>${sentimentCounts.neutral}</b></div>
+      <div class="negative"><span>利空</span><b>${sentimentCounts.negative}</b></div>`;
 
     $('#sentimentTimelineList').innerHTML = list.length
       ? list.map((item) => {
@@ -1596,13 +1830,21 @@
         latest: (reports.list || []).slice(0, 8),
       },
       position: position ? {
-        hasPosition: true,
+        hasPosition: position.shares > 0,
+        hasOpeningPosition: Boolean(position.opening),
+        hasTransactions: position.transactions.length > 0,
         cost: position.cost,
         shares: position.shares,
         capital: position.capital,
+        opening: position.opening,
+        totalBuy: position.totalBuy,
+        totalSell: position.totalSell,
+        netInvested: position.netInvested,
+        realizedPnl: position.realizedPnl,
+        transactions: position.transactions.slice(-10),
         marketValue,
-        pnl: Number.isFinite(marketValue) ? marketValue - position.cost * position.shares : null,
-        pnlPct: Number.isFinite(price) ? ((price / position.cost) - 1) * 100 : null,
+        pnl: position.shares > 0 && Number.isFinite(marketValue) ? marketValue - position.cost * position.shares : null,
+        pnlPct: position.shares > 0 && Number.isFinite(price) ? ((price / position.cost) - 1) * 100 : null,
         weightPct: position.capital && Number.isFinite(marketValue) ? (marketValue / position.capital) * 100 : null,
         aiAdvice: positionAdvice ? {
           action: positionAdvice.action,
@@ -1650,7 +1892,10 @@
       ? '页面已同步'
       : `同步 ${generated.toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false, hour: '2-digit', minute: '2-digit' })}`;
     const contextParts = ['页面上下文已同步'];
-    if (position) contextParts.push(`已读取持仓 ${position.shares.toLocaleString('zh-CN')} 股`);
+    if (position) {
+      const recordCount = position.transactions.length + (position.opening ? 1 : 0);
+      contextParts.push(`已读取 ${recordCount} 条持仓记录 · 持仓 ${position.shares.toLocaleString('zh-CN')} 股`);
+    }
     if (storedCount) contextParts.push(`${storedCount} 项修正`);
     $('#copilotMode').textContent = contextParts.join(' · ');
   }

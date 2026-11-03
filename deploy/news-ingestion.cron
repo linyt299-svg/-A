@@ -1,0 +1,2 @@
+# 每 5 分钟抓取、分析并去重入库；部署时将 /app 替换为项目绝对路径。
+*/5 * * * * cd /app && /usr/bin/python3 -m backend.news_pipeline >> /var/log/guanlan-news.log 2>&1

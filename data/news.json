@@ -1,0 +1,85 @@
+[
+  {
+    "id": "news-20261102-001",
+    "title": "多模态视频生成模型密集发布，推理需求持续升温",
+    "content": "多家头部厂商更新视频生成模型与商业化计划，算力、光模块和内容平台相关需求受到关注。",
+    "publish_time": "2026-11-02T10:26:00+08:00",
+    "source": "财联社",
+    "sentiment": "偏利好",
+    "impact_score": 76,
+    "related_sectors": ["AI视频", "光模块", "AIGC概念"],
+    "related_stocks": [
+      { "code": "300413", "name": "芒果超媒" },
+      { "code": "002558", "name": "巨人网络" },
+      { "code": "300308", "name": "中际旭创" }
+    ],
+    "ai_comment": "模型迭代直接提升视频生成与算力需求，短期更利好有真实产品和订单兑现能力的标的。",
+    "verified": true,
+    "url": ""
+  },
+  {
+    "id": "news-20261102-002",
+    "title": "宁德时代发布新一代高倍率电池量产进展",
+    "content": "公司披露新一代高倍率电池已进入量产爬坡阶段，并将优先覆盖高端新能源车型。",
+    "publish_time": "2026-11-02T09:12:00+08:00",
+    "source": "深圳证券交易所公告",
+    "sentiment": "极度利好",
+    "impact_score": 84,
+    "related_sectors": ["动力电池", "新能源汽车"],
+    "related_stocks": [
+      { "code": "300750", "name": "宁德时代" },
+      { "code": "002594", "name": "比亚迪" }
+    ],
+    "ai_comment": "量产进度由公司正式披露，若产能与客户导入按期兑现，将对电池业务形成直接催化。",
+    "verified": true,
+    "url": ""
+  },
+  {
+    "id": "news-20261102-003",
+    "title": "贵州茅台披露回购股份实施进展",
+    "content": "公司公告回购计划按既定节奏推进，已完成部分股份回购。",
+    "publish_time": "2026-11-02T08:35:00+08:00",
+    "source": "上海证券交易所公告",
+    "sentiment": "偏利好",
+    "impact_score": 58,
+    "related_sectors": ["白酒", "消费"],
+    "related_stocks": [
+      { "code": "600519", "name": "贵州茅台" }
+    ],
+    "ai_comment": "回购进展强化管理层对长期价值的信心，但短期涨幅仍取决于消费预期和资金承接。",
+    "verified": true,
+    "url": ""
+  },
+  {
+    "id": "news-20261101-004",
+    "title": "行业协会提示部分光伏环节仍面临库存压力",
+    "content": "行业供需改善仍需时间，部分环节库存和价格竞争压力尚未完全缓解。",
+    "publish_time": "2026-11-01T14:20:00+08:00",
+    "source": "证券时报",
+    "sentiment": "偏利空",
+    "impact_score": -52,
+    "related_sectors": ["光伏设备", "新能源"],
+    "related_stocks": [
+      { "code": "601012", "name": "隆基绿能" }
+    ],
+    "ai_comment": "库存压力可能继续压制产业链价格与利润修复，需等待排产和终端需求数据确认拐点。",
+    "verified": true,
+    "url": ""
+  },
+  {
+    "id": "news-20261102-005",
+    "title": "网传某消费龙头将上调全年指引",
+    "content": "自媒体称某消费龙头可能上调全年经营指引，目前尚无公司公告或权威媒体确认。",
+    "publish_time": "2026-11-02T11:05:00+08:00",
+    "source": "市场自媒体",
+    "sentiment": "偏利好",
+    "impact_score": 68,
+    "related_sectors": ["白酒", "消费"],
+    "related_stocks": [
+      { "code": "600519", "name": "贵州茅台" }
+    ],
+    "ai_comment": "该消息尚未得到权威渠道确认，模型按传闻风险处理，不应据此形成追涨判断。",
+    "verified": false,
+    "url": ""
+  }
+]

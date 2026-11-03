@@ -567,6 +567,7 @@
     renderFlow();
     renderInstitutions();
     renderAnnouncements();
+    renderSentimentTimeline();
     renderMarkets();
     renderAi();
     renderSources();
@@ -1375,6 +1376,47 @@
       : '<p class="search-empty">暂无公告</p>';
   }
 
+  function sentimentTone(impact) {
+    return num(impact) > 5 ? 'positive' : num(impact) < -5 ? 'negative' : 'neutral';
+  }
+
+  function renderSentimentTimeline() {
+    const news = state.data.news || { score: 50, sentiment: '中性', list: [] };
+    const list = Array.isArray(news.list) ? news.list : [];
+    const badgeTone = num(news.score, 50) >= 60 ? 'up' : num(news.score, 50) < 45 ? 'down' : 'neutral';
+    $('#newsTimelineBadge').textContent = news.sentiment || '中性';
+    $('#newsTimelineBadge').className = `signal-badge ${badgeTone}`;
+    $('#newsTimelineCount').textContent = `${list.length} 条 · ${num(news.score, 50).toFixed(0)} 分`;
+    $('#stockNewsDisclaimer').textContent = news.disclaimer || '资讯由AI抓取分析，不构成投资建议，请注意风险。';
+    $('#currentNewsSentimentLabel').textContent = news.sentiment || '中性';
+    $('#currentNewsSentimentScore').textContent = `${num(news.score, 50).toFixed(0)} 分 · 24h 半衰期`;
+    $('#currentNewsSentiment').className = `current-news-sentiment ${badgeTone}`;
+
+    $('#sentimentTimelineList').innerHTML = list.length
+      ? list.map((item) => {
+        const published = new Date(item.publish_time);
+        const timeText = Number.isNaN(published.getTime()) ? '时间未知' : new Intl.DateTimeFormat('zh-CN', {
+          timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+        }).format(published).replaceAll('/', '.');
+        const tone = sentimentTone(item.impact_score);
+        const rumor = item.verified === false ? ' · 未证实，已降权' : '';
+        return `
+          <article class="sentiment-item ${tone}">
+            <span class="sentiment-dot"></span>
+            <div>
+              <div class="sentiment-item-head">
+                <span class="news-sentiment-tag ${tone}">${escapeHtml(item.sentiment || '中性')}</span>
+                <time>${escapeHtml(timeText)}</time>
+              </div>
+              <h3>${escapeHtml(item.title)}</h3>
+              <p class="sentiment-source">${escapeHtml(item.source || '未知来源')}${escapeHtml(rumor)} · 影响 ${num(item.impact_score) > 0 ? '+' : ''}${num(item.impact_score).toFixed(0)}</p>
+              <p class="sentiment-ai-comment"><b>AI 点评：</b>${escapeHtml(item.ai_comment || '暂无点评')}</p>
+            </div>
+          </article>`;
+      }).join('')
+      : '<p class="search-empty">暂无该股相关资讯，消息面按中性处理。</p>';
+  }
+
   function renderMarkets() {
     const markets = state.data.markets;
     const risk = markets.risk || {};
@@ -1483,6 +1525,7 @@
     const ai = data.ai || {};
     const flow = data.flow || {};
     const reports = data.reports || {};
+    const news = data.news || {};
     const position = readStoredPosition(state.code);
     const positionAdvice = position && state.positionAdvice ? state.positionAdvice : null;
     const price = Number(quote.price);
@@ -1571,6 +1614,13 @@
         } : null,
       } : { hasPosition: false },
       announcements: ((data.announcements && data.announcements.list) || []).slice(0, 10),
+      news: {
+        score: news.score,
+        sentiment: news.sentiment,
+        netImpact: news.net_impact,
+        latest: (news.list || []).slice(0, 10),
+        disclaimer: news.disclaimer,
+      },
       marketRisk: data.markets && data.markets.risk,
       visibleSections: {
         '个股总览': visibleSectionText('#overview', 2000),
@@ -1580,6 +1630,7 @@
         '资金面': visibleSectionText('#flow'),
         '机构观点': visibleSectionText('#institutions'),
         '公司公告': visibleSectionText('#announcements'),
+        '个股舆情': visibleSectionText('#sentimentTimeline'),
         '外围市场': visibleSectionText('#global', 2500),
         '我的持仓': visibleSectionText('.position-block', 2500),
       },
@@ -1871,7 +1922,7 @@
     $('#confidenceFill').style.width = `${ai.confidence}%`;
     $('#aiSummary').textContent = aiDriverSummary(ai);
 
-    const factors = ['trend', 'capital', 'institution'].map((key) => ai.factors.find((f) => f.key === key)).filter(Boolean);
+    const factors = ['technical', 'capital', 'institution', 'news'].map((key) => ai.factors.find((f) => f.key === key)).filter(Boolean);
     $('#aiFactors').innerHTML = factors.map((factor) => `
       <div class="ai-factor"><span>${escapeHtml(factor.label)}</span><i><b style="width:${clamp(factor.score, 2, 98)}%"></b></i><em>${factor.score}</em></div>`).join('');
     const validFactors = (ai.factors || []).filter((factor) => Number.isFinite(Number(factor.score)));

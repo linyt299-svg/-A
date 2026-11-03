@@ -198,6 +198,61 @@
     }).join('');
   }
 
+  function newsTone(item) {
+    const impact = num(item && (item.adjusted_impact ?? item.impact_score));
+    return impact > 5 ? 'positive' : impact < -5 ? 'negative' : 'neutral';
+  }
+
+  function renderCatalysts(items, disclaimer) {
+    const root = $('#catalystList');
+    if (!Array.isArray(items) || !items.length) {
+      root.innerHTML = '<div class="market-empty">暂无达到时效阈值的重磅资讯</div>';
+      return;
+    }
+    root.innerHTML = items.map((item) => {
+      const time = new Date(item.publish_time);
+      const timeText = Number.isNaN(time.getTime()) ? '时间未知' : new Intl.DateTimeFormat('zh-CN', {
+        timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+      }).format(time).replaceAll('/', '.');
+      const sectors = (item.related_sectors || []).slice(0, 4).map((sector) =>
+        `<button class="sector-filter-chip" type="button" data-sector="${escapeHtml(sector)}">${escapeHtml(sector)}</button>`
+      ).join('');
+      const stocks = (item.related_stocks || []).slice(0, 4).map((stock) => {
+        const indirect = stock.relation_type === 'indirect';
+        const confidence = indirect ? ` · 置信度 ${Math.round(num(stock.confidence, 0.5) * 100)}%` : '';
+        const title = stock.relation_reason || (indirect ? '产业链间接映射，尚待订单或公告验证' : '新闻直接关联');
+        return `<a class="news-stock-chip ${indirect ? 'is-indirect' : ''}" href="/?code=${encodeURIComponent(stock.code)}" title="${escapeHtml(title + confidence)}"><span>${indirect ? '间接' : '直接'}</span>${escapeHtml(stock.name)}</a>`;
+      }).join('');
+      const impact = num(item.adjusted_impact ?? item.impact_score);
+      return `
+        <article class="catalyst-row">
+          <span class="news-sentiment-tag ${newsTone(item)}">${escapeHtml(item.sentiment || '中性')}</span>
+          <div class="catalyst-copy">
+            <h3 title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</h3>
+            <div class="catalyst-meta"><span>${escapeHtml(item.source || '未知来源')}</span><span>${escapeHtml(timeText)}</span>${item.anti_rumor_flag ? '<span>⚠ 未证实传闻已降权</span>' : ''}</div>
+            <div class="catalyst-sectors">${sectors || '<span class="catalyst-meta">暂无关联板块</span>'}</div>
+            ${stocks ? `<div class="catalyst-stocks">${stocks}</div>` : ''}
+            ${item.ai_comment ? `<p class="catalyst-comment">${escapeHtml(item.ai_comment)}</p>` : ''}
+          </div>
+          <div class="catalyst-impact"><b class="${toneClass(impact)}">${impact > 0 ? '+' : ''}${impact.toFixed(1)}</b><small>衰减后影响</small></div>
+        </article>`;
+    }).join('');
+    $('#marketNewsDisclaimer').textContent = disclaimer || '资讯由AI抓取分析，不构成投资建议，请注意风险。';
+  }
+
+  function focusSector(sector) {
+    const candidates = [...$$('#hotspotGrid .hotspot-card'), ...$$('#sectorList .sector-row')];
+    const target = candidates.find((element) => element.textContent.includes(sector));
+    candidates.forEach((element) => element.classList.remove('is-news-target'));
+    if (!target) {
+      toast(`“${sector}”暂不在当前板块榜单中`);
+      return;
+    }
+    target.classList.add('is-news-target');
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    window.setTimeout(() => target.classList.remove('is-news-target'), 2200);
+  }
+
   function renderSectors(items) {
     const root = $('#sectorList');
     if (!Array.isArray(items) || !items.length) {
@@ -304,6 +359,7 @@
     renderStatus(data.status);
     renderHero(data);
     renderIndices(data.indices);
+    renderCatalysts(data.catalysts, data.newsDisclaimer);
     renderHotspots(data.hotspots);
     renderSectors(data.sectors);
     renderHotStocks(data.stocks && data.stocks.hot, scoringPaused ? pausedText : '热门股票数据暂时不可用');
@@ -499,6 +555,10 @@
     bindSearch();
     bindNavigation();
     bindRulePopover();
+    $('#catalystList').addEventListener('click', (event) => {
+      const chip = event.target.closest('[data-sector]');
+      if (chip) focusSector(chip.dataset.sector);
+    });
     $('#marketRefreshBtn').addEventListener('click', () => loadOverview({ refresh: true }));
     loadOverview();
     window.setInterval(() => {

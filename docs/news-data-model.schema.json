@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://guanlan.local/schemas/news-item.json",
+  "title": "观澜投研消息面数据模型",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "title",
+    "content",
+    "publish_time",
+    "source",
+    "sentiment",
+    "impact_score",
+    "related_sectors",
+    "related_stocks",
+    "ai_comment"
+  ],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "content": { "type": "string" },
+    "publish_time": { "type": "string", "format": "date-time" },
+    "source": { "type": "string", "minLength": 1 },
+    "sentiment": {
+      "type": "string",
+      "enum": ["极度利好", "偏利好", "中性", "偏利空", "极度利空"]
+    },
+    "impact_score": { "type": "number", "minimum": -100, "maximum": 100 },
+    "importance": { "type": "number", "minimum": 0, "maximum": 3, "default": 0 },
+    "related_sectors": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "related_stocks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "name"],
+        "properties": {
+          "code": { "type": "string", "pattern": "^[0-9]{6}$" },
+          "name": { "type": "string", "minLength": 1 },
+          "relation_type": { "type": "string", "enum": ["direct", "indirect"], "default": "direct" },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "relation_reason": { "type": "string" }
+        }
+      }
+    },
+    "ai_comment": { "type": "string", "minLength": 1 },
+    "verified": { "type": "boolean", "default": true },
+    "url": { "type": "string" }
+  }
+}

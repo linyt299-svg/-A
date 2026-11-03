@@ -206,7 +206,7 @@
               </div>
             </div>
             <div class="conclusion-score" id="conclusionScoreBox">
-              <span title="综合20/60日趋势、MACD/RSI/KDJ、近5日资金、机构共识、估值、市场环境和量能。">综合研判分</span>
+              <span title="技术面35% + 资金面25% + 机构面20% + 消息面20%；消息面含来源权重与时间衰减。">综合研判分</span>
               <b id="conclusionScore">—</b>
               <em id="conclusionStance">—</em>
             </div>
@@ -444,6 +444,25 @@
             </div>
           </section>
 
+          <!-- Stock news sentiment -->
+          <section class="panel sentiment-panel" id="sentimentTimeline">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">NEWS SENTIMENT</p>
+                <div class="title-with-badge">
+                  <h2>个股舆情时间轴</h2>
+                  <span class="signal-badge neutral" id="newsTimelineBadge">中性</span>
+                </div>
+              </div>
+              <span class="soft-badge" id="newsTimelineCount">—</span>
+            </div>
+            <div class="sentiment-timeline" id="sentimentTimelineList">
+              <div class="ann-skeleton"></div>
+              <div class="ann-skeleton"></div>
+            </div>
+            <p class="news-disclaimer" id="stockNewsDisclaimer">资讯由AI抓取分析，不构成投资建议，请注意风险。</p>
+          </section>
+
           <!-- Global markets -->
           <section class="panel global-panel" id="global">
             <div class="panel-head">
@@ -497,14 +516,21 @@
             </div>
           </div>
 
-          <p class="score-description">综合研判分：综合20/60日趋势、MACD/RSI/KDJ、近5日资金、机构共识、估值、市场环境和量能。</p>
+          <p class="score-description">综合研判分：技术面 35% + 资金面 25% + 机构面 20% + 消息面 20%。</p>
+
+          <div class="current-news-sentiment" id="currentNewsSentiment">
+            <span>当前消息面情绪</span>
+            <b id="currentNewsSentimentLabel">中性</b>
+            <em id="currentNewsSentimentScore">50 分</em>
+          </div>
 
           <p class="ai-summary" id="aiSummary">正在识别主要驱动与拖累因子…</p>
 
           <div class="ai-factors" id="aiFactors">
-            <div class="ai-factor"><span>趋势结构</span><i><b style="width:0%"></b></i><em>—</em></div>
-            <div class="ai-factor"><span>资金动能</span><i><b style="width:0%"></b></i><em>—</em></div>
-            <div class="ai-factor"><span>机构共识</span><i><b style="width:0%"></b></i><em>—</em></div>
+            <div class="ai-factor"><span>技术面</span><i><b style="width:0%"></b></i><em>—</em></div>
+            <div class="ai-factor"><span>资金面</span><i><b style="width:0%"></b></i><em>—</em></div>
+            <div class="ai-factor"><span>机构面</span><i><b style="width:0%"></b></i><em>—</em></div>
+            <div class="ai-factor"><span>消息面</span><i><b style="width:0%"></b></i><em>—</em></div>
           </div>
 
           <div class="ai-levels" id="aiLevels">
@@ -718,7 +744,7 @@
           <div><b id="dialogStance">—</b><span>模型观点</span></div>
           <div><b id="dialogConfidence">—</b><span>置信度</span></div>
         </div>
-        <p class="dialog-score-description">综合研判分：综合20/60日趋势、MACD/RSI/KDJ、近5日资金、机构共识、估值、市场环境和量能。</p>
+        <p class="dialog-score-description">综合研判分：技术面 35% + 资金面 25% + 机构面 20% + 消息面 20%；消息面含来源权重与时间衰减。</p>
         <div class="dialog-section">
           <h3>因子拆解</h3>
           <div class="factor-table" id="dialogFactors"></div>

@@ -2262,6 +2262,178 @@ function computePriceLevels(price, technical, rows) {
   };
 }
 
+function computeQuantAlert({ price, composite, confidence, scoreTechnical, scoreCapital, technical, flow, levels }) {
+  const validPrice = (value, fallback) => Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : fallback;
+  const support = validPrice(levels.support, price * 0.97);
+  const resistance = validPrice(levels.resistance, price * 1.03);
+  const invalidation = validPrice(levels.invalidation, support * 0.98);
+  const atr = validPrice(technical.atr14, price * 0.02);
+  const ma20 = validPrice(technical.ma && technical.ma.ma20, invalidation);
+  const rsi6 = num(technical.rsi && technical.rsi.rsi6, 50);
+  const volumeRatio = num(technical.volumeRatio, 1);
+  const capitalPositive = flow.historyAvailable ? flow.sum5 > 0 : flow.today.main > 0;
+  const capitalNegative = flow.historyAvailable ? flow.sum5 < 0 : flow.today.main < 0;
+
+  const buyConditions = [
+    { label: `综合研判 ≥ 60（当前 ${composite}）`, met: composite >= 60 },
+    { label: '技术结构未转空', met: scoreTechnical >= 55 && !technical.maBearish },
+    { label: 'MACD 动能偏多', met: technical.macd.hist > 0 || technical.macd.signal === '金叉' },
+    { label: '主力资金净流入', met: capitalPositive },
+  ];
+  const sellConditions = [
+    { label: `综合研判 < 45（当前 ${composite}）`, met: composite < 45 },
+    { label: '价格跌破 MA20 或均线转空', met: price <= ma20 || technical.maBearish },
+    { label: 'MACD 动能偏空', met: technical.macd.hist < 0 || technical.macd.signal === '死叉' },
+    { label: '主力资金净流出', met: capitalNegative },
+  ];
+  const buyMet = buyConditions.filter((item) => item.met).length;
+  const sellMet = sellConditions.filter((item) => item.met).length;
+  const buyStrength = round(clamp(
+    composite * 0.52 + scoreTechnical * 0.28 + scoreCapital * 0.20 - (rsi6 >= 75 ? 7 : 0),
+    0,
+    100,
+  ), 0);
+  const sellStrength = round(clamp(
+    (100 - composite) * 0.52 + (100 - scoreTechnical) * 0.28 + (100 - scoreCapital) * 0.20 + (rsi6 >= 75 ? 7 : 0),
+    0,
+    100,
+  ), 0);
+
+  const pullbackBuffer = Math.max(atr * 0.7, price * 0.012);
+  const buyZoneTop = round(Math.min(support + pullbackBuffer, resistance * 0.985));
+  const profitZoneBottom = round(Math.max(resistance - pullbackBuffer, support * 1.015));
+  const riskTrigger = round(Math.max(invalidation, ma20));
+  const pullbackTriggered = price <= buyZoneTop && buyMet >= 3 && composite >= 60;
+  const breakoutTriggered = price >= resistance && buyMet >= 3 && volumeRatio >= 1.2;
+  const riskTriggered = price <= riskTrigger && sellMet >= 3;
+  const profitTriggered = price >= profitZoneBottom && rsi6 >= 70 && (capitalNegative || technical.macd.hist < 0);
+
+  let actionKey = 'watch';
+  let actionLabel = '观望';
+  let tone = 'neutral';
+  let status = 'watching';
+  let statusLabel = '监控中';
+  let title = '量价条件尚未形成共振';
+  let summary = `当前综合研判 ${composite}/100，等待价格进入关键区间并满足至少 3 项量化条件。`;
+  let triggerLabel = '下一观察价';
+  let triggerPrice = composite >= 50 ? buyZoneTop : riskTrigger;
+  let comparator = '<=';
+  let conditions = composite >= 50 ? buyConditions : sellConditions;
+  let metCount = composite >= 50 ? buyMet : sellMet;
+  let signalScore = Math.max(buyStrength, sellStrength);
+  let rule = `价格进入 ${fmtLevel(triggerPrice)} 元附近，且至少 3/4 条件成立`;
+
+  if (riskTriggered) {
+    actionKey = 'sell';
+    actionLabel = '卖出';
+    tone = 'down';
+    status = 'triggered';
+    statusLabel = '已触发';
+    title = '风险卖出条件已触发';
+    summary = `现价 ${fmtLevel(price)} 元已跌至 MA20/失效位构成的风险线下方，空头条件 ${sellMet}/4，模型建议优先控制回撤。`;
+    triggerLabel = '风险触发价';
+    triggerPrice = riskTrigger;
+    conditions = sellConditions;
+    metCount = sellMet;
+    signalScore = sellStrength;
+    rule = `现价 ≤ ${fmtLevel(triggerPrice)} 元，且空头条件至少满足 3/4`;
+  } else if (profitTriggered) {
+    actionKey = 'sell';
+    actionLabel = '卖出';
+    tone = 'warn';
+    status = 'triggered';
+    statusLabel = '已触发';
+    title = '压力位止盈提醒已触发';
+    summary = `现价进入压力区，RSI6 为 ${round(rsi6, 0)}，且资金或 MACD 动能转弱，可考虑分批止盈而非追高。`;
+    triggerLabel = '止盈触发价';
+    triggerPrice = profitZoneBottom;
+    comparator = '>=';
+    conditions = [
+      { label: `进入压力区（≥ ${fmtLevel(profitZoneBottom)}）`, met: price >= profitZoneBottom },
+      { label: `RSI6 ≥ 70（当前 ${round(rsi6, 0)}）`, met: rsi6 >= 70 },
+      { label: '资金出现净流出', met: capitalNegative },
+      { label: 'MACD 动能转弱', met: technical.macd.hist < 0 },
+    ];
+    metCount = conditions.filter((item) => item.met).length;
+    signalScore = sellStrength;
+    rule = `现价 ≥ ${fmtLevel(triggerPrice)} 元，且超买与动能转弱同时出现`;
+  } else if (pullbackTriggered || breakoutTriggered) {
+    actionKey = 'buy';
+    actionLabel = '买入';
+    tone = 'up';
+    status = 'triggered';
+    statusLabel = '已触发';
+    title = pullbackTriggered ? '回踩买入条件已触发' : '突破买入条件已触发';
+    summary = pullbackTriggered
+      ? `现价进入支撑缓冲区，多头条件 ${buyMet}/4，可按计划分批观察，不建议一次性追入。`
+      : `现价放量站上压力位，多头条件 ${buyMet}/4，趋势转强得到量价确认。`;
+    triggerLabel = pullbackTriggered ? '回踩触发价' : '突破触发价';
+    triggerPrice = pullbackTriggered ? buyZoneTop : resistance;
+    comparator = pullbackTriggered ? '<=' : '>=';
+    conditions = buyConditions;
+    metCount = buyMet;
+    signalScore = buyStrength;
+    rule = pullbackTriggered
+      ? `现价 ≤ ${fmtLevel(triggerPrice)} 元，且多头条件至少满足 3/4`
+      : `现价 ≥ ${fmtLevel(triggerPrice)} 元、量比 ≥ 1.2，且多头条件至少满足 3/4`;
+  } else if (composite >= 60) {
+    actionKey = 'buy';
+    actionLabel = '买入';
+    tone = 'up';
+    title = '等待回踩或放量突破';
+    summary = `多头条件已满足 ${buyMet}/4；回踩 ${fmtLevel(buyZoneTop)} 元以内，或放量突破 ${fmtLevel(resistance)} 元后触发买入提醒。`;
+    triggerLabel = '优先买入价';
+    triggerPrice = buyZoneTop;
+    conditions = buyConditions;
+    metCount = buyMet;
+    signalScore = buyStrength;
+    rule = `现价 ≤ ${fmtLevel(triggerPrice)} 元，或放量站上 ${fmtLevel(resistance)} 元`;
+  } else if (composite < 45 || (technical.maBearish && sellMet >= 3)) {
+    actionKey = 'sell';
+    actionLabel = '卖出';
+    tone = 'down';
+    title = '等待风险线确认卖出';
+    summary = `空头条件已满足 ${sellMet}/4；若价格跌至 ${fmtLevel(riskTrigger)} 元以下，触发风险卖出提醒。`;
+    triggerLabel = '风险卖出价';
+    triggerPrice = riskTrigger;
+    conditions = sellConditions;
+    metCount = sellMet;
+    signalScore = sellStrength;
+    rule = `现价 ≤ ${fmtLevel(triggerPrice)} 元，且空头条件至少满足 3/4`;
+  }
+
+  const remainingPct = comparator === '>='
+    ? ((triggerPrice / price) - 1) * 100
+    : ((price / triggerPrice) - 1) * 100;
+  const alertConfidence = round(clamp(
+    confidence * 0.72 + Math.abs(signalScore - 50) * 0.32 + metCount * 2.2 - (flow.historyAvailable ? 0 : 5),
+    48,
+    93,
+  ), 0);
+
+  return {
+    actionKey,
+    actionLabel,
+    tone,
+    status,
+    statusLabel,
+    title,
+    summary,
+    triggerLabel,
+    triggerPrice,
+    currentPrice: price,
+    comparator,
+    distancePct: status === 'triggered' ? 0 : round(Math.max(remainingPct, 0), 2),
+    confidence: alertConfidence,
+    signalScore,
+    metCount,
+    totalConditions: conditions.length,
+    conditions,
+    rule,
+    refreshSeconds: 30,
+  };
+}
+
 function nextTradingDayInfo() {
   const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -2779,6 +2951,16 @@ function computeAi({ quote, technical, flow, reports, markets, rows, news }) {
     composite,
     levels: priceLevels,
   });
+  const quantAlert = computeQuantAlert({
+    price,
+    composite,
+    confidence,
+    scoreTechnical,
+    scoreCapital,
+    technical,
+    flow,
+    levels: priceLevels,
+  });
 
   const mainYi = fmtYi(flow.sum5);
   const targetText = reports.avgTarget
@@ -2922,6 +3104,7 @@ function computeAi({ quote, technical, flow, reports, markets, rows, news }) {
     },
     todayForecast,
     forecast,
+    quantAlert,
     conclusions: {
       ai: {
         title: adviceTitle,
@@ -3651,12 +3834,16 @@ const authSweep = setInterval(() => {
 }, 30 * 60 * 1000);
 authSweep.unref();
 
-server.listen(PORT, HOST, () => {
-  console.log(`\n  观澜投研 · StockLens`);
-  console.log(`  http://${HOST}:${PORT}`);
-  console.log(`  数据源：东方财富公开接口 / 本地多因子模型\n`);
-  fs.mkdirSync(SNAPSHOT_DIR, { recursive: true });
-});
+if (require.main === module) {
+  server.listen(PORT, HOST, () => {
+    console.log(`\n  观澜投研 · StockLens`);
+    console.log(`  http://${HOST}:${PORT}`);
+    console.log(`  数据源：东方财富公开接口 / 本地多因子模型\n`);
+    fs.mkdirSync(SNAPSHOT_DIR, { recursive: true });
+  });
+}
+
+module.exports = { computeQuantAlert };
 
 process.on('SIGINT', () => {
   server.close(() => process.exit(0));

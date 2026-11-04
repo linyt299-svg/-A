@@ -236,6 +236,34 @@
               </div>
             </article>
 
+            <article class="quant-alert" id="quantAlert" aria-live="polite">
+              <div class="quant-alert-main">
+                <div class="quant-alert-head">
+                  <span class="quant-alert-icon"><svg class="icon"><use href="#i-bell"/></svg></span>
+                  <div class="quant-alert-label">
+                    <span>实时量化提醒</span>
+                    <small id="quantAlertFreshness">交易时段每 30 秒更新</small>
+                  </div>
+                  <em class="signal-badge neutral" id="quantAlertAction">观望 · 监控中</em>
+                  <strong id="quantAlertConfidence">置信度 —</strong>
+                </div>
+                <h3 id="quantAlertTitle">量化条件计算中</h3>
+                <p id="quantAlertText">正在结合实时价格、技术结构与主力资金计算触发条件。</p>
+                <div class="quant-alert-rule"><span>触发规则</span><b id="quantAlertRule">—</b></div>
+                <div class="quant-alert-conditions" id="quantAlertConditions"></div>
+              </div>
+              <div class="quant-alert-metrics">
+                <div><span id="quantAlertTriggerLabel">触发价</span><b id="quantAlertTriggerPrice">—</b></div>
+                <div><span>当前价</span><b id="quantAlertCurrentPrice">—</b></div>
+                <div><span>距触发</span><b id="quantAlertDistance">—</b></div>
+                <div><span>信号强度</span><b id="quantAlertScore">—</b></div>
+                <div class="quant-confidence-meter">
+                  <span>模型置信度</span>
+                  <i><b id="quantAlertConfidenceFill"></b></i>
+                </div>
+              </div>
+            </article>
+
             <article class="conclusion-card">
               <div class="conclusion-label">
                 <span>技术结论</span>

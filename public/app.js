@@ -47,6 +47,7 @@
     searchTimer: null,
     toastTimer: null,
     autoTimer: null,
+    quantAlertStates: {},
     copilotHistory: [],
     copilotBusy: false,
     copilotSeq: 0,
@@ -673,6 +674,58 @@
     return '与现价持平';
   }
 
+  function renderQuantAlert() {
+    const alert = state.data.ai && state.data.ai.quantAlert;
+    const panel = $('#quantAlert');
+    if (!alert || !panel) return;
+
+    const tone = ['up', 'down', 'warn'].includes(alert.tone) ? alert.tone : 'neutral';
+    panel.className = `quant-alert is-${tone}${alert.status === 'triggered' ? ' is-triggered' : ''}`;
+    $('#quantAlertAction').textContent = `${alert.actionLabel || '观望'} · ${alert.statusLabel || '监控中'}`;
+    $('#quantAlertAction').className = `signal-badge ${tone}`;
+    $('#quantAlertConfidence').textContent = `置信度 ${num(alert.confidence)}%`;
+    $('#quantAlertTitle').textContent = alert.title || '量化条件尚未形成共振';
+    $('#quantAlertText').textContent = alert.summary || '等待实时价格与量价条件确认。';
+    $('#quantAlertRule').textContent = alert.rule || '—';
+    $('#quantAlertTriggerLabel').textContent = alert.triggerLabel || '触发价';
+    $('#quantAlertTriggerPrice').textContent = `${fmtPrice(alert.triggerPrice)} 元`;
+    $('#quantAlertCurrentPrice').textContent = `${fmtPrice(alert.currentPrice)} 元`;
+    $('#quantAlertDistance').textContent = alert.status === 'triggered'
+      ? '已到达'
+      : `${num(alert.distancePct).toFixed(2)}%`;
+    $('#quantAlertScore').textContent = `${num(alert.signalScore).toFixed(0)} / 100`;
+    $('#quantAlertConfidenceFill').style.width = `${clamp(num(alert.confidence), 0, 100)}%`;
+    $('#quantAlertConditions').innerHTML = (alert.conditions || []).map((condition) => `
+      <span class="quant-condition${condition.met ? ' is-met' : ''}">${escapeHtml(condition.label)}</span>
+    `).join('');
+
+    const generated = new Date(state.data.generatedAt);
+    const generatedTime = Number.isNaN(generated.getTime())
+      ? '刚刚更新'
+      : generated.toLocaleTimeString('zh-CN', {
+        timeZone: 'Asia/Shanghai',
+        hour12: false,
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      });
+    $('#quantAlertFreshness').textContent = state.data.stale
+      ? `快照数据 · ${generatedTime}`
+      : `交易时段每 ${alert.refreshSeconds || 30} 秒更新 · ${generatedTime}`;
+
+    const previous = state.quantAlertStates[state.code];
+    const newlyTriggered = alert.status === 'triggered'
+      && (!previous || previous.status !== 'triggered' || previous.actionKey !== alert.actionKey);
+    if (newlyTriggered && !state.data.stale) {
+      const verb = alert.actionKey === 'sell' ? '卖出/止盈' : alert.actionKey === 'buy' ? '买入' : '观察';
+      setTimeout(() => toast(`量化${verb}提醒：${alert.title}`, alert.actionKey === 'sell' ? 'error' : ''), 80);
+    }
+    state.quantAlertStates[state.code] = {
+      status: alert.status,
+      actionKey: alert.actionKey,
+    };
+  }
+
   function renderConclusions() {
     const ai = state.data.ai;
     const flow = state.data.flow;
@@ -701,6 +754,7 @@
     $('#conclusionSupportGap').title = levels.supportSource ? `依据：${levels.supportSource}` : '';
     $('#conclusionResistanceGap').textContent = formatGap(resistanceGap);
     $('#conclusionResistanceGap').title = levels.resistanceSource ? `依据：${levels.resistanceSource}` : '';
+    renderQuantAlert();
 
     const technical = c.technical || {
       verdict: '中性',
@@ -1823,6 +1877,7 @@
         summary: ai.summary,
         levels: ai.levels,
         conclusions: ai.conclusions,
+        quantAlert: ai.quantAlert,
         factors: ai.factors,
         todayForecast: ai.todayForecast,
         forecast: ai.forecast,
@@ -2360,7 +2415,7 @@
       if (state.data && state.data.status && state.data.status.state === 'open') {
         loadStock(state.code, { silent: true });
       }
-    }, 90_000);
+    }, 30_000);
   }
 
   function boot() {

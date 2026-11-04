@@ -3881,6 +3881,53 @@ async function serveStatic(req, res, pathname) {
   }
 }
 
+async function loadWatchlistQuote(code) {
+  return firstAvailable('watchlist quote', [
+    { name: 'eastmoney', load: () => cached(`quote:${code}`, 30_000, () => fetchQuote(code, { retries: 0 })) },
+    { name: 'tencent', load: () => cached(`quote:tencent:${code}`, 30_000, () => fetchTencentQuote(code)) },
+    { name: 'sina', load: () => cached(`quote:sina:${code}`, 30_000, () => fetchSinaQuote(code)) },
+  ]);
+}
+
+async function loadWatchlistKline(code) {
+  return firstAvailable('watchlist kline', [
+    { name: 'tencent', load: () => cached(`watchkline:tencent:${code}`, 5 * 60_000, () => fetchTencentKline(code, 30)) },
+    { name: 'eastmoney', load: () => cached(`watchkline:${code}`, 5 * 60_000, () => fetchKline(code, 30, { retries: 0 })) },
+    { name: 'sina', load: () => cached(`watchkline:sina:${code}`, 5 * 60_000, () => fetchSinaKline(code, 30)) },
+  ]);
+}
+
+async function buildWatchlistItem(code, {
+  loadQuote = loadWatchlistQuote,
+  loadKline = loadWatchlistKline,
+  loadSnapshot = readSnapshot,
+} = {}) {
+  // Quotes are sufficient to render a watchlist row. A mini chart failure must
+  // not make a user-saved symbol disappear from the list.
+  const [liveQuote, liveKline, snapshot] = await Promise.all([
+    optionalWithin(Promise.resolve().then(() => loadQuote(code)).catch(() => null), 6_500, null),
+    optionalWithin(Promise.resolve().then(() => loadKline(code)).catch(() => null), 4_500, null),
+    Promise.resolve().then(() => loadSnapshot(code)).catch(() => null),
+  ]);
+  const quote = liveQuote || (snapshot && snapshot.quote) || {};
+  const kline = liveKline || (snapshot && snapshot.kline) || {};
+  const hasPrice = Number.isFinite(Number(quote.price)) && Number(quote.price) > 0;
+  const hasChange = quote.changePct != null && Number.isFinite(Number(quote.changePct));
+
+  return {
+    code,
+    name: quote.name || code,
+    price: hasPrice ? Number(quote.price) : null,
+    changePct: hasChange ? Number(quote.changePct) : null,
+    change: quote.change != null && Number.isFinite(Number(quote.change)) ? Number(quote.change) : null,
+    market: quote.market || marketOf(code).label,
+    spark: safeArray(kline.rows).slice(-24).map((row) => row.close)
+      .filter((value) => value != null && Number.isFinite(Number(value))),
+    available: hasPrice,
+    stale: !liveQuote && hasPrice,
+  };
+}
+
 async function handleWatchlist(url, res) {
   const codes = String(url.searchParams.get('codes') || '')
     .split(',')
@@ -3888,30 +3935,8 @@ async function handleWatchlist(url, res) {
     .filter(Boolean)
     .slice(0, 12);
   if (!codes.length) return json(res, 200, { items: [] });
-  const items = await Promise.all(
-    codes.map(async (code) => {
-      try {
-        const [quote, kline] = await Promise.all([
-          cached(`quote:${code}`, 30_000, () => fetchQuote(code, { retries: 0 }))
-            .catch(() => cached(`quote:tencent:${code}`, 30_000, () => fetchTencentQuote(code))),
-          cached(`watchkline:tencent:${code}`, 5 * 60_000, () => fetchTencentKline(code, 30))
-            .catch(() => cached(`watchkline:${code}`, 5 * 60_000, () => fetchKline(code, 30, { retries: 0 }))),
-        ]);
-        return {
-          code,
-          name: quote.name,
-          price: quote.price,
-          changePct: quote.changePct,
-          change: quote.change,
-          market: quote.market,
-          spark: kline.rows.slice(-24).map((r) => r.close),
-        };
-      } catch {
-        return null;
-      }
-    }),
-  );
-  return json(res, 200, { items: items.filter(Boolean) });
+  const items = await Promise.all(codes.map((code) => buildWatchlistItem(code)));
+  return json(res, 200, { items });
 }
 
 async function handlePositionAdvice(url, res) {
@@ -4140,6 +4165,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  buildWatchlistItem,
   buildStockPayload,
   computeQuantAlert,
   parseEastmoneyTrends,

@@ -229,7 +229,7 @@
       const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
       if (Array.isArray(raw)) {
         const valid = raw.map(normalizeCode).filter(Boolean).slice(0, 12);
-        if (valid.length) return Array.from(new Set(valid));
+        return Array.from(new Set(valid));
       }
     } catch {
       /* ignore malformed storage */
@@ -342,7 +342,9 @@
     }
     container.innerHTML = state.watchItems.map((item) => {
       const active = item.code === state.code;
-      const direction = toneClass(item.changePct);
+      const hasQuote = item.price != null && Number.isFinite(Number(item.price));
+      const hasChange = item.changePct != null && Number.isFinite(Number(item.changePct));
+      const direction = hasChange ? toneClass(Number(item.changePct)) : 'neutral';
       const spark = sparkPath(item.spark || []);
       return `
         <div class="watch-item${active ? ' is-active' : ''}" data-code="${escapeHtml(item.code)}" role="button" tabindex="0" aria-label="查看 ${escapeHtml(item.name)}">
@@ -353,8 +355,8 @@
             </div>
           </div>
           <div class="watch-quote">
-            <b>${fmtPrice(item.price)}</b>
-            <small class="${direction}">${fmtPct(item.changePct)}</small>
+            <b>${hasQuote ? fmtPrice(item.price) : '—'}</b>
+            <small class="${direction}">${hasChange ? fmtPct(item.changePct) : '—'}</small>
           </div>
           <svg class="watch-spark ${direction}" viewBox="0 0 40 18" preserveAspectRatio="none" aria-hidden="true">
             <path d="${spark}"></path>
@@ -365,7 +367,9 @@
         </div>`;
     }).join('');
 
-    const changes = state.watchItems.map((item) => num(item.changePct));
+    const changes = state.watchItems
+      .filter((item) => item.changePct != null && Number.isFinite(Number(item.changePct)))
+      .map((item) => Number(item.changePct));
     const avg = changes.length ? changes.reduce((a, b) => a + b, 0) / changes.length : 0;
     const up = changes.filter((v) => v > 0).length;
     const down = changes.filter((v) => v < 0).length;

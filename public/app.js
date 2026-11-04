@@ -35,6 +35,7 @@
     code: normalizeCode(new URLSearchParams(location.search).get('code')) || localStorage.getItem(LAST_CODE_KEY) || '600519',
     data: null,
     range: '3M',
+    chartMode: 'intraday',
     watchlist: loadWatchlist(),
     watchItems: [],
     chart: null,
@@ -1275,8 +1276,6 @@
   }
 
   function renderTrend() {
-    const rows = state.data.kline.rows;
-    const rangeRows = getRangeRows();
     if (!state.chart) {
       const dom = $('#klineChart');
       if (window.echarts) {
@@ -1287,7 +1286,34 @@
         }
       }
     }
+    const intraday = state.data.intraday || { rows: [], available: false };
+    const isIntraday = state.chartMode === 'intraday';
+    $('#maLegend').hidden = isIntraday;
+    $('#rangeTabs').hidden = isIntraday;
+    $('#trendBadge').textContent = isIntraday
+      ? `${intraday.date || '当日'} · 分时`
+      : '前复权 · 日线';
+    $('#klineChart').setAttribute('aria-label', isIntraday ? '股票当日分时走势图' : '股票日K线走势图');
+    $('#chartEmpty').hidden = !(isIntraday && !intraday.rows.length);
     updateChart();
+
+    if (isIntraday) {
+      const intradayRows = intraday.rows || [];
+      const latest = intradayRows[intradayRows.length - 1];
+      const totalAmount = intradayRows.reduce((sum, row) => sum + num(row.amount), 0);
+      const metrics = [
+        { label: '最新价', value: latest ? fmtPrice(latest.price) : '—', className: latest ? toneClass(latest.pct) : '' },
+        { label: '涨跌幅', value: latest ? fmtPct(latest.pct) : '—', className: latest ? toneClass(latest.pct) : '' },
+        { label: '分时均价', value: latest ? fmtPrice(latest.average) : '—', className: '' },
+        { label: '分时成交额', value: latest ? fmtMoney(totalAmount) : '—', className: '' },
+        { label: '数据日期', value: intraday.date || '—', className: '' },
+      ];
+      $('#trendSummary').innerHTML = metrics.map((metric) => `
+        <div class="trend-metric"><span>${metric.label}</span><b class="${metric.className}">${metric.value}</b></div>`).join('');
+      return;
+    }
+
+    const rangeRows = getRangeRows();
 
     const closes = rangeRows.map((r) => r.close);
     const first = closes[0];
@@ -1318,7 +1344,7 @@
       <div class="trend-metric"><span>${m.label}</span><b class="${m.className}">${m.value}</b></div>`).join('');
   }
 
-  function chartTooltip(params) {
+  function dailyChartTooltip(params) {
     const index = params[0].dataIndex;
     const rows = state.currentChartRows || [];
     const row = rows[index];
@@ -1347,6 +1373,112 @@
   }
 
   function updateChart() {
+    if (state.chartMode === 'intraday') updateIntradayChart();
+    else updateDailyChart();
+  }
+
+  function intradayChartTooltip(params) {
+    const index = params[0] && params[0].dataIndex;
+    const row = (state.data.intraday.rows || [])[index];
+    if (!row) return '';
+    const color = row.pct >= 0 ? '#c45345' : '#23826a';
+    return `
+      <div style="min-width:220px">
+        <div style="display:flex;justify-content:space-between;gap:18px;margin-bottom:9px;color:rgba(255,255,255,.5);font-size:14px">
+          <span>${escapeHtml(row.timestamp)}</span><span style="color:${color}">${row.pct > 0 ? '+' : ''}${row.pct.toFixed(2)}%</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 18px;font-size:14px;line-height:1.55">
+          <span style="color:rgba(255,255,255,.45)">最新 <b style="color:${color};font-weight:600">${fmtPrice(row.price)}</b></span>
+          <span style="color:rgba(255,255,255,.45)">均价 <b style="color:#c39143;font-weight:500">${fmtPrice(row.average)}</b></span>
+          <span style="color:rgba(255,255,255,.45)">分钟量 <b style="color:#fff;font-weight:500">${num(row.volume).toLocaleString('zh-CN')}</b></span>
+          <span style="color:rgba(255,255,255,.45)">成交额 <b style="color:#fff;font-weight:500">${fmtMoney(row.amount)}</b></span>
+        </div>
+      </div>`;
+  }
+
+  function updateIntradayChart() {
+    if (!state.chart) return;
+    const intraday = state.data.intraday || { rows: [] };
+    const rows = intraday.rows || [];
+    if (!rows.length) {
+      state.chart.clear();
+      return;
+    }
+    const times = rows.map((row) => row.time);
+    const prices = rows.map((row) => row.price);
+    const averages = rows.map((row) => row.average);
+    const preClose = num(intraday.preClose) || num(state.data.quote.prevClose) || prices[0];
+    const maxDelta = Math.max(...prices.concat(averages).map((value) => Math.abs(value - preClose)), preClose * 0.005);
+    const priceMin = Number((preClose - maxDelta * 1.12).toFixed(2));
+    const priceMax = Number((preClose + maxDelta * 1.12).toFixed(2));
+    const volumes = rows.map((row, index) => ({
+      value: row.volume,
+      itemStyle: { color: row.price >= (index ? rows[index - 1].price : preClose) ? 'rgba(196,83,69,.34)' : 'rgba(35,130,106,.34)' },
+    }));
+
+    state.chart.setOption({
+      animationDuration: 360,
+      animationEasing: 'cubicOut',
+      backgroundColor: 'transparent',
+      textStyle: { fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif' },
+      grid: [
+        { left: 8, right: 62, top: 13, height: '64%' },
+        { left: 8, right: 62, top: '80%', height: '12%' },
+      ],
+      axisPointer: { link: [{ xAxisIndex: 'all' }], label: { backgroundColor: '#153a30', fontSize: 13 } },
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'cross', crossStyle: { color: 'rgba(21,58,48,.25)' } },
+        backgroundColor: 'rgba(13,43,36,.96)',
+        borderWidth: 0,
+        padding: [10, 12],
+        textStyle: { color: '#eef2e9', fontSize: 14 },
+        extraCssText: 'border-radius:10px;box-shadow:0 14px 32px rgba(13,43,36,.22);',
+        formatter: intradayChartTooltip,
+      },
+      xAxis: [0, 1].map((gridIndex) => ({
+        type: 'category',
+        gridIndex,
+        data: times,
+        boundaryGap: gridIndex === 1,
+        axisLine: { lineStyle: { color: '#e4dfd2' } },
+        axisTick: { show: false },
+        axisLabel: gridIndex === 0 ? { show: false } : {
+          color: '#a09f94',
+          fontSize: 12,
+          margin: 10,
+          interval: Math.max(0, Math.floor(rows.length / (window.innerWidth < 700 ? 4 : 7)) - 1),
+        },
+        splitLine: { show: false },
+        axisPointer: gridIndex === 0 ? { z: 10 } : { label: { show: false } },
+      })),
+      yAxis: [
+        {
+          type: 'value', min: priceMin, max: priceMax, position: 'right', splitNumber: 4,
+          axisLine: { show: false }, axisTick: { show: false },
+          axisLabel: { color: '#a09f94', fontSize: 12, margin: 10, formatter: (value) => Number(value).toFixed(2) },
+          splitLine: { lineStyle: { color: 'rgba(20,57,47,.07)', type: 'dashed' } },
+        },
+        {
+          type: 'value', gridIndex: 1, position: 'right', splitNumber: 2,
+          axisLine: { show: false }, axisTick: { show: false }, axisLabel: { show: false }, splitLine: { show: false },
+        },
+      ],
+      dataZoom: [{ type: 'inside', xAxisIndex: [0, 1], start: 0, end: 100 }],
+      series: [
+        {
+          name: '最新价', type: 'line', data: prices, symbol: 'none', smooth: 0.12,
+          lineStyle: { width: 1.6, color: '#2e7565' },
+          areaStyle: { color: 'rgba(46,117,101,.08)' },
+          markLine: { silent: true, symbol: 'none', label: { show: false }, lineStyle: { color: 'rgba(160,159,148,.7)', type: 'dashed' }, data: [{ yAxis: preClose }] },
+        },
+        { name: '均价', type: 'line', data: averages, symbol: 'none', smooth: 0.2, lineStyle: { width: 1.15, color: '#c39143' } },
+        { name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: volumes, barWidth: '58%' },
+      ],
+    }, { notMerge: true });
+  }
+
+  function updateDailyChart() {
     if (!state.chart) return;
     const rows = getRangeRows();
     state.currentChartRows = rows;
@@ -1395,7 +1527,7 @@
         padding: [10, 12],
         textStyle: { color: '#eef2e9', fontSize: 14 },
         extraCssText: 'border-radius:10px;box-shadow:0 14px 32px rgba(13,43,36,.22);',
-        formatter: chartTooltip,
+        formatter: dailyChartTooltip,
       },
       xAxis: [
         {
@@ -2381,12 +2513,23 @@
     forwardTagNav('#heroFlowTag', '#flow');
     forwardTagNav('#heroReportTag', '#institutions');
 
+    $('#chartModeTabs').addEventListener('click', (event) => {
+      const button = event.target.closest('[data-chart-mode]');
+      if (!button || button.dataset.chartMode === state.chartMode) return;
+      state.chartMode = button.dataset.chartMode;
+      $$('#chartModeTabs button').forEach((item) => {
+        const active = item === button;
+        item.classList.toggle('active', active);
+        item.setAttribute('aria-pressed', String(active));
+      });
+      renderTrend();
+    });
+
     $('#rangeTabs').addEventListener('click', (event) => {
       const button = event.target.closest('[data-range]');
       if (!button || button.dataset.range === state.range) return;
       state.range = button.dataset.range;
       $$('#rangeTabs button').forEach((b) => b.classList.toggle('active', b === button));
-      updateChart();
       renderTrend();
     });
 

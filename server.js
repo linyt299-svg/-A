@@ -362,6 +362,34 @@ async function fetchText(url, { timeout = 10000, retries = 1, encoding = 'gbk', 
   throw lastError || new Error('Request failed');
 }
 
+async function firstAvailable(kind, providers) {
+  const failures = [];
+  try {
+    return await Promise.any(providers.map(({ name, load }) => Promise.resolve()
+      .then(load)
+      .catch((error) => {
+        failures.push(`${name}: ${error.message}`);
+        throw error;
+      })));
+  } catch {
+    throw new Error(`${kind} unavailable (${failures.join('; ')})`);
+  }
+}
+
+async function optionalWithin(promise, timeoutMs, fallback) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(fallback), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function tencentSymbol(code) {
   const market = marketOf(code);
   if (market.label === 'SH') return `sh${code}`;
@@ -506,6 +534,49 @@ async function fetchKline(code, limit = 260, { retries = 1 } = {}) {
   return { name: d.name, code: d.code, preKPrice: num(d.preKPrice), rows, provider: 'eastmoney' };
 }
 
+function parseEastmoneyTrends(data, code, quotePreClose = 0) {
+  const d = data || {};
+  const preClose = num(d.preClose) || num(quotePreClose);
+  const rows = safeArray(d.trends).map((line) => {
+    const v = String(line).split(',');
+    const timestamp = String(v[0] || '').trim();
+    const price = num(v[2]);
+    if (!timestamp || price <= 0) return null;
+    const average = num(v[7]) || price;
+    const change = preClose > 0 ? price - preClose : 0;
+    return {
+      time: timestamp.slice(-5),
+      timestamp,
+      price: round(price),
+      average: round(average),
+      volume: round(num(v[5]), 0),
+      amount: round(num(v[6]), 0),
+      change: round(change),
+      pct: preClose > 0 ? round((change / preClose) * 100) : 0,
+    };
+  }).filter(Boolean);
+  return {
+    name: d.name || '',
+    code: d.code || code,
+    date: rows.length ? rows[0].timestamp.slice(0, 10) : null,
+    preClose: round(preClose),
+    rows,
+    provider: 'eastmoney',
+    available: rows.length > 0,
+  };
+}
+
+async function fetchIntraday(code, preClose, { retries = 1 } = {}) {
+  const url =
+    `https://push2his.eastmoney.com/api/qt/stock/trends2/get?secid=${secidOf(code)}` +
+    '&ut=fa5fd1943c7b386f172d6893dbfba10b&fields1=f1,f2,f3,f4,f5,f6' +
+    '&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60&iscr=0&ndays=1';
+  const json = await fetchJson(url, { retries });
+  const result = parseEastmoneyTrends(json && json.data, code, preClose);
+  if (!result.available) throw new Error('No intraday data');
+  return result;
+}
+
 async function fetchTencentQuote(code) {
   const symbol = tencentSymbol(code);
   const text = await fetchText(`https://qt.gtimg.cn/q=${symbol}`, {
@@ -591,6 +662,169 @@ async function fetchTencentKline(code, limit = 260) {
     rows,
     provider: 'tencent',
   };
+}
+
+function parseSinaQuote(text, code) {
+  const match = String(text || '').match(/="([^"]*)"/);
+  if (!match) throw new Error('Sina quote unavailable');
+  const p = match[1].split(',');
+  const price = num(p[3]);
+  const prevClose = num(p[2]);
+  if (!p[0] || price <= 0 || prevClose <= 0) throw new Error('Sina quote empty');
+  const market = marketOf(code);
+  const change = price - prevClose;
+  return {
+    code,
+    name: p[0],
+    market: market.label,
+    marketName: market.name,
+    secid: secidOf(code),
+    industry: '—',
+    region: '—',
+    price: round(price),
+    prevClose: round(prevClose),
+    open: round(num(p[1])),
+    high: round(num(p[4])),
+    low: round(num(p[5])),
+    change: round(change),
+    changePct: round((change / prevClose) * 100),
+    volume: round(num(p[8]) / 100, 0),
+    amount: round(num(p[9]), 0),
+    turnover: null,
+    amplitude: round(((num(p[4]) - num(p[5])) / prevClose) * 100),
+    volumeRatio: null,
+    pe: null,
+    pb: null,
+    totalShares: null,
+    floatShares: null,
+    totalMv: null,
+    floatMv: null,
+    limitUp: round(prevClose * 1.1),
+    limitDown: round(prevClose * 0.9),
+    epsTtm: null,
+    status: marketStatus(),
+    provider: 'sina',
+  };
+}
+
+async function fetchSinaQuote(code) {
+  const symbol = tencentSymbol(code);
+  const text = await fetchText(`https://hq.sinajs.cn/list=${symbol}`, {
+    timeout: 8000,
+    retries: 0,
+  });
+  return parseSinaQuote(text, code);
+}
+
+function parseSinaKline(data, code) {
+  const raw = data && data.result && Array.isArray(data.result.data)
+    ? data.result.data
+    : Array.isArray(data) ? data : [];
+  if (raw.length < 5) throw new Error('Sina kline unavailable');
+  const rows = raw.map((item) => {
+    const open = num(item.open);
+    const close = num(item.close);
+    const high = num(item.high);
+    const low = num(item.low);
+    const volume = num(item.volume) / 100;
+    return {
+      date: String(item.day || item.date || '').slice(0, 10),
+      open,
+      close,
+      high,
+      low,
+      volume: round(volume, 0),
+      amount: round(volume * 100 * close, 0),
+      amplitude: open > 0 ? round(((high - low) / open) * 100) : 0,
+      pct: open > 0 ? round(((close / open) - 1) * 100) : 0,
+      change: round(close - open),
+      turnover: 0,
+    };
+  }).filter((row) => row.date && row.close > 0);
+  if (rows.length < 5) throw new Error('Sina kline empty');
+  for (let i = 1; i < rows.length; i += 1) {
+    rows[i].change = round(rows[i].close - rows[i - 1].close);
+    rows[i].pct = round((rows[i].close / rows[i - 1].close - 1) * 100);
+  }
+  return {
+    name: code,
+    code,
+    preKPrice: rows.length > 1 ? rows[rows.length - 2].close : rows[0].close,
+    rows,
+    provider: 'sina',
+  };
+}
+
+async function fetchSinaKline(code, limit = 260) {
+  const symbol = tencentSymbol(code);
+  const url = 'https://quotes.sina.cn/cn/api/openapi.php/CN_MarketDataService.getKLineData' +
+    `?symbol=${symbol}&scale=240&ma=no&datalen=${limit}`;
+  const json = await fetchJson(url, {
+    timeout: 9000,
+    retries: 0,
+    headers: SINA_HEADERS,
+  });
+  return parseSinaKline(json, code);
+}
+
+function parseTencentIntraday(data, code, preClose = 0) {
+  const symbol = tencentSymbol(code);
+  const bundle = data && data.data && data.data[symbol];
+  const minuteBundle = bundle && bundle.data;
+  const rawRows = minuteBundle && Array.isArray(minuteBundle.data)
+    ? minuteBundle.data
+    : Array.isArray(minuteBundle) ? minuteBundle : [];
+  const rawDate = String((minuteBundle && minuteBundle.date) || bundle && bundle.date || '').replace(/-/g, '');
+  const date = rawDate.length === 8
+    ? `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}`
+    : eastmoneyDate();
+  let previousVolume = 0;
+  let previousAmount = 0;
+  const rows = rawRows.map((line) => {
+    const v = Array.isArray(line) ? line : String(line).trim().split(/\s+/);
+    const rawTime = String(v[0] || '').replace(':', '');
+    const price = num(v[1]);
+    if (rawTime.length < 4 || price <= 0) return null;
+    const cumulativeVolume = Math.max(0, num(v[2]));
+    const cumulativeAmount = Math.max(0, num(v[3]));
+    const volume = Math.max(0, cumulativeVolume - previousVolume);
+    const amount = Math.max(0, cumulativeAmount - previousAmount);
+    previousVolume = cumulativeVolume;
+    previousAmount = cumulativeAmount;
+    const average = cumulativeVolume > 0 && cumulativeAmount > 0
+      ? cumulativeAmount / (cumulativeVolume * 100)
+      : price;
+    const change = preClose > 0 ? price - preClose : 0;
+    const time = `${rawTime.slice(0, 2)}:${rawTime.slice(2, 4)}`;
+    return {
+      time,
+      timestamp: `${date} ${time}`,
+      price: round(price),
+      average: round(average),
+      volume: round(volume, 0),
+      amount: round(amount, 0),
+      change: round(change),
+      pct: preClose > 0 ? round((change / preClose) * 100) : 0,
+    };
+  }).filter(Boolean);
+  return {
+    name: '',
+    code,
+    date: rows.length ? date : null,
+    preClose: round(preClose),
+    rows,
+    provider: 'tencent',
+    available: rows.length > 0,
+  };
+}
+
+async function fetchTencentIntraday(code, preClose) {
+  const symbol = tencentSymbol(code);
+  const url = `https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=${symbol}`;
+  const json = await fetchJson(url, { retries: 1 });
+  const result = parseTencentIntraday(json, code, preClose);
+  if (!result.available) throw new Error('Tencent intraday unavailable');
+  return result;
 }
 
 async function fetchProfile(code) {
@@ -3161,36 +3395,89 @@ function computeAi({ quote, technical, flow, reports, markets, rows, news }) {
 async function buildStockPayload(code, { refresh = false } = {}) {
   const market = marketOf(code);
 
-  const quote = await cached(`quote:${code}`, 25_000, () => fetchQuote(code, { retries: 0 }), { stale: refresh })
-    .catch(() => cached(`quote:tencent:${code}`, 25_000, () => fetchTencentQuote(code), { stale: refresh }));
-  const kline = await cached(`kline:tencent:${code}`, 8 * 60_000, () => fetchTencentKline(code, 260), { stale: refresh })
-    .catch(() => cached(`kline:${code}`, 8 * 60_000, () => fetchKline(code, 260, { retries: 0 }), { stale: refresh }));
+  // Render and other overseas hosts can intermittently time out against a
+  // single mainland quote provider. Start independent providers together so
+  // one slow upstream cannot hold the whole stock page hostage.
+  const [quote, kline] = await Promise.all([
+    firstAvailable('quote', [
+      { name: 'eastmoney', load: () => cached(`quote:${code}`, 25_000, () => fetchQuote(code, { retries: 0 }), { stale: refresh }) },
+      { name: 'tencent', load: () => cached(`quote:tencent:${code}`, 25_000, () => fetchTencentQuote(code), { stale: refresh }) },
+      { name: 'sina', load: () => cached(`quote:sina:${code}`, 25_000, () => fetchSinaQuote(code), { stale: refresh }) },
+    ]),
+    firstAvailable('kline', [
+      { name: 'tencent', load: () => cached(`kline:tencent:${code}`, 8 * 60_000, () => fetchTencentKline(code, 260), { stale: refresh }) },
+      { name: 'eastmoney', load: () => cached(`kline:${code}`, 8 * 60_000, () => fetchKline(code, 260, { retries: 0 }), { stale: refresh }) },
+      { name: 'sina', load: () => cached(`kline:sina:${code}`, 8 * 60_000, () => fetchSinaKline(code, 260), { stale: refresh }) },
+    ]),
+  ]);
+
+  const intradayUnavailable = {
+    name: quote.name,
+    code,
+    date: null,
+    preClose: quote.prevClose,
+    rows: [],
+    provider: 'unavailable',
+    available: false,
+  };
+  const intradayPromise = optionalWithin(
+    firstAvailable('intraday', [
+      { name: 'eastmoney', load: () => cached(`intraday:${code}`, 20_000, () => fetchIntraday(code, quote.prevClose, { retries: 0 }), { stale: refresh }) },
+      { name: 'tencent', load: () => cached(`intraday:tencent:${code}`, 20_000, () => fetchTencentIntraday(code, quote.prevClose), { stale: refresh }) },
+    ]).catch(() => intradayUnavailable),
+    6_500,
+    intradayUnavailable,
+  );
 
   const profilePromise = quote.industry === '—'
     ? cached(`profile:${code}`, 24 * 60 * 60_000, () => fetchProfile(code)).catch(() => null)
     : Promise.resolve(null);
+  const emptyAnnouncements = { list: [], total: 0 };
+  const emptyMarkets = {
+    groups: [],
+    risk: { score: 50, label: '数据暂缺', tone: 'neutral', summary: '' },
+  };
 
-  const [reportsRaw, announcementsRaw, flowRaw, liveFlow, markets, profile, breadth, newsFeed] = await Promise.all([
-    cached(`reports:${code}`, 30 * 60_000, () => fetchReports(code), { stale: refresh })
-      .catch(() => []),
-    cached(`ann:${code}`, 10 * 60_000, () => fetchAnnouncements(code), { stale: refresh })
-      .catch(() => ({ list: [], total: 0 })),
-    cached(`flow:${code}`, 2 * 60_000, () => fetchFlowDaily(code, { retries: 0 }), { stale: refresh })
-      .catch(() => []),
-    cached(`flowlive:${code}`, 20_000, () => fetchFlowLive(code, { retries: 0 }), { stale: refresh })
-      .catch(() => cached(`flowsina:${code}`, 20_000, () => fetchSinaFlow(code), { stale: refresh }).catch(() => null)),
-    cached('markets:all', 60_000, () => fetchMarkets({ retries: 0 }), { stale: refresh })
-      .catch(() => composeFallbackMarkets().catch(() => ({
-        groups: [],
-        risk: { score: 50, label: '数据暂缺', tone: 'neutral', summary: '' },
-      }))),
-    profilePromise,
-    cached('aShare:breadth', 5 * 60_000, fetchAShareBreadth).catch(() => null),
-    cached('news:feed', 5 * 60_000, () => loadNewsFeed({ apiUrl: NEWS_API_URL, apiKey: NEWS_API_KEY, provider: NEWS_PROVIDER }), { stale: refresh })
-      .catch((error) => {
-        console.warn('[news-feed]', error.message);
-        return [];
-      }),
+  const [intraday, reportsRaw, announcementsRaw, flowRaw, liveFlow, markets, profile, breadth, newsFeed] = await Promise.all([
+    intradayPromise,
+    optionalWithin(
+      cached(`reports:${code}`, 30 * 60_000, () => fetchReports(code), { stale: refresh }).catch(() => []),
+      6_500,
+      [],
+    ),
+    optionalWithin(
+      cached(`ann:${code}`, 10 * 60_000, () => fetchAnnouncements(code), { stale: refresh }).catch(() => emptyAnnouncements),
+      6_500,
+      emptyAnnouncements,
+    ),
+    optionalWithin(
+      cached(`flow:${code}`, 2 * 60_000, () => fetchFlowDaily(code, { retries: 0 }), { stale: refresh }).catch(() => []),
+      6_500,
+      [],
+    ),
+    optionalWithin(
+      cached(`flowlive:${code}`, 20_000, () => fetchFlowLive(code, { retries: 0 }), { stale: refresh })
+        .catch(() => cached(`flowsina:${code}`, 20_000, () => fetchSinaFlow(code), { stale: refresh }).catch(() => null)),
+      6_500,
+      null,
+    ),
+    optionalWithin(
+      cached('markets:all', 60_000, () => fetchMarkets({ retries: 0 }), { stale: refresh })
+        .catch(() => composeFallbackMarkets().catch(() => emptyMarkets)),
+      6_500,
+      emptyMarkets,
+    ),
+    optionalWithin(profilePromise, 6_500, null),
+    optionalWithin(cached('aShare:breadth', 5 * 60_000, fetchAShareBreadth).catch(() => null), 6_500, null),
+    optionalWithin(
+      cached('news:feed', 5 * 60_000, () => loadNewsFeed({ apiUrl: NEWS_API_URL, apiKey: NEWS_API_KEY, provider: NEWS_PROVIDER }), { stale: refresh })
+        .catch((error) => {
+          console.warn('[news-feed]', error.message);
+          return [];
+        }),
+      6_500,
+      [],
+    ),
   ]);
 
   if (profile) {
@@ -3231,8 +3518,15 @@ async function buildStockPayload(code, { refresh = false } = {}) {
     generatedAt: new Date().toISOString(),
     tradingDate: eastmoneyDate(),
     source: {
-      quote: quote.provider === 'tencent' ? '腾讯行情 · 实时' : '东方财富 · 实时行情',
-      kline: kline.provider === 'tencent' ? '腾讯行情 · 前复权日线' : '东方财富 · 前复权日线',
+      quote: quote.provider === 'tencent'
+        ? '腾讯行情 · 实时'
+        : quote.provider === 'sina' ? '新浪财经 · 实时行情' : '东方财富 · 实时行情',
+      kline: kline.provider === 'tencent'
+        ? '腾讯行情 · 前复权日线'
+        : kline.provider === 'sina' ? '新浪财经 · 日线' : '东方财富 · 前复权日线',
+      intraday: intraday.provider === 'tencent'
+        ? '腾讯行情 · 当日分时'
+        : intraday.provider === 'eastmoney' ? '东方财富 · 当日分时' : '当日分时暂不可用',
       reports: '东方财富 · 近一年机构研报',
       announcements: '东方财富 · 公司公告',
       news: NEWS_PROVIDER === '10jqka' ? '同花顺重要快讯 · 产业链映射' : NEWS_API_URL ? '外部新闻 API · AI 分析' : '本地消息样本 · AI 分析',
@@ -3247,12 +3541,14 @@ async function buildStockPayload(code, { refresh = false } = {}) {
     providers: {
       quote: quote.provider,
       kline: kline.provider,
+      intraday: intraday.provider,
       flow: flow.provider,
       markets: marketsData.provider,
     },
     status: marketStatus(),
     quote: { ...quote, market: market.label, marketName: market.name },
     kline: { name: kline.name, code: kline.code, preKPrice: kline.preKPrice, rows, provider: kline.provider || 'eastmoney' },
+    intraday,
     technical,
     flow,
     reports,
@@ -3843,7 +4139,14 @@ if (require.main === module) {
   });
 }
 
-module.exports = { computeQuantAlert };
+module.exports = {
+  buildStockPayload,
+  computeQuantAlert,
+  parseEastmoneyTrends,
+  parseTencentIntraday,
+  parseSinaQuote,
+  parseSinaKline,
+};
 
 process.on('SIGINT', () => {
   server.close(() => process.exit(0));

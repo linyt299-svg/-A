@@ -299,16 +299,20 @@
               <p class="panel-kicker">PRICE ACTION</p>
               <div class="title-with-badge">
                 <h2>近期走势</h2>
-                <span class="soft-badge">前复权 · 日线</span>
+                <span class="soft-badge" id="trendBadge">当日分时</span>
               </div>
             </div>
             <div class="trend-controls">
-              <div class="ma-legend" aria-label="均线图例">
+              <div class="chart-mode-tabs" id="chartModeTabs" role="group" aria-label="走势图类型">
+                <button type="button" data-chart-mode="intraday" class="active" aria-pressed="true">分时</button>
+                <button type="button" data-chart-mode="daily" aria-pressed="false">日线</button>
+              </div>
+              <div class="ma-legend" id="maLegend" aria-label="均线图例" hidden>
                 <span><i style="--c:#c39143"></i>MA5</span>
                 <span><i style="--c:#2e7565"></i>MA20</span>
                 <span><i style="--c:#8174a6"></i>MA60</span>
               </div>
-              <div class="range-tabs" id="rangeTabs" role="group" aria-label="走势区间">
+              <div class="range-tabs" id="rangeTabs" role="group" aria-label="走势区间" hidden>
                 <button type="button" data-range="1M">1月</button>
                 <button type="button" data-range="3M" class="active">3月</button>
                 <button type="button" data-range="6M">6月</button>
@@ -317,7 +321,11 @@
             </div>
           </div>
           <div class="chart-wrap">
-            <div id="klineChart" class="kline-chart" role="img" aria-label="股票K线走势图"></div>
+            <div id="klineChart" class="kline-chart" role="img" aria-label="股票价格走势图"></div>
+            <div class="chart-empty" id="chartEmpty" hidden>
+              <b>暂无当日分时</b>
+              <span>非交易时间可能返回最近交易日或暂无数据，可切换日线查看。</span>
+            </div>
             <div class="chart-loading" id="chartLoading"><span></span><span></span><span></span></div>
           </div>
           <div class="trend-summary" id="trendSummary">

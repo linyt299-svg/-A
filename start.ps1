@@ -9,4 +9,4 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
 $version = node --version
 Write-Host "观澜投研 · StockLens  |  Node $version" -ForegroundColor DarkGreen
 Write-Host '启动后访问：http://127.0.0.1:4173' -ForegroundColor Gray
-node server.js
+node --watch server.js

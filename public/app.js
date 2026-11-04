@@ -21,6 +21,8 @@
     conclusionTechText: { label: '技术结论正文', section: '技术面' },
     conclusionFlowTitle: { label: '资金结论标题', section: '资金面' },
     conclusionFlowText: { label: '资金结论正文', section: '资金面' },
+    todayForecastBasis: { label: '今日预判依据', section: '今日预判' },
+    todayForecastNarrative: { label: '今日预判解读', section: '今日预判' },
     forecastBasis: { label: '明日预判依据', section: '明日预判' },
     forecastNarrative: { label: '明日预判解读', section: '明日预判' },
     quantTrigger: { label: '量化触发条件', section: '量化指导' },
@@ -560,6 +562,7 @@
     if (!state.data) return;
     renderQuote();
     renderConclusions();
+    renderTodayForecast();
     renderForecast();
     renderPosition();
     renderTrend();
@@ -737,22 +740,15 @@
     $('#conclusionFlowToday').className = toneClass(flow.today.main);
   }
 
-  function renderForecast() {
-    const forecast = state.data.ai.forecast;
-    const panel = $('.forecast-panel');
-    if (!forecast) {
-      if (panel) panel.classList.add('is-hidden');
-      return;
-    }
-    if (panel) panel.classList.remove('is-hidden');
+  function renderForecastSummary(forecast, prefix) {
     const probs = forecast.probabilities || { up: 0, flat: 0, down: 0 };
     const range = forecast.range || { low: 0, high: 0 };
-    $('#forecastDate').textContent = `${forecast.label} ${forecast.short} ${forecast.weekday}`;
-    $('#forecastConfidence').textContent = `置信度 ${forecast.confidence}%`;
-    $('#forecastTrend').textContent = forecast.trend;
-    $('#forecastTrend').className = forecast.tone || '';
+    $(`#${prefix}Date`).textContent = `${forecast.label} ${forecast.short} ${forecast.weekday}`;
+    $(`#${prefix}Confidence`).textContent = `置信度 ${forecast.confidence}%`;
+    $(`#${prefix}Trend`).textContent = forecast.trend;
+    $(`#${prefix}Trend`).className = forecast.tone || '';
     const spread = probs.up - probs.down;
-    $('#forecastDirection').textContent = spread > 8
+    $(`#${prefix}Direction`).textContent = spread > 8
       ? '上涨概率占优'
       : spread < -8
         ? '下跌概率占优'
@@ -762,15 +758,37 @@
       ['震荡', probs.flat, 'prob-flat'],
       ['下跌', probs.down, 'prob-down'],
     ];
-    $('#forecastProbs').innerHTML = rows.map(([label, value, cls]) => `
+    $(`#${prefix}Probs`).innerHTML = rows.map(([label, value, cls]) => `
       <div class="forecast-prob-row">
         <span>${label}</span>
         <div class="prob-track"><i class="${cls}" style="width:${clamp(value, 2, 100)}%"></i></div>
         <b>${value}%</b>
       </div>`).join('');
-    $('#forecastRange').textContent = `${fmtPrice(range.low)} – ${fmtPrice(range.high)}`;
-    $('#forecastBasis').textContent = forecast.basis || '—';
-    $('#forecastNarrative').textContent = forecast.narrative || 'AI 正在生成预判解读…';
+    $(`#${prefix}Range`).textContent = `${fmtPrice(range.low)} – ${fmtPrice(range.high)}`;
+    $(`#${prefix}Basis`).textContent = forecast.basis || '—';
+    $(`#${prefix}Narrative`).textContent = forecast.narrative || 'AI 正在生成预判解读…';
+  }
+
+  function renderTodayForecast() {
+    const forecast = state.data.ai.todayForecast;
+    const panel = $('.today-forecast-panel');
+    if (!forecast) {
+      if (panel) panel.classList.add('is-hidden');
+      return;
+    }
+    if (panel) panel.classList.remove('is-hidden');
+    renderForecastSummary(forecast, 'todayForecast');
+  }
+
+  function renderForecast() {
+    const forecast = state.data.ai.forecast;
+    const panel = $('.tomorrow-forecast-panel');
+    if (!forecast) {
+      if (panel) panel.classList.add('is-hidden');
+      return;
+    }
+    if (panel) panel.classList.remove('is-hidden');
+    renderForecastSummary(forecast, 'forecast');
     const quant = forecast.quant || {};
     const position = readStoredPosition(state.code);
     const hasPosition = Boolean(position && position.shares > 0);
@@ -1049,7 +1067,7 @@
     const position = readStoredPosition(state.code);
     const empty = $('#positionEmpty');
     const filled = $('#positionFilled');
-    const panel = $('.forecast-panel');
+    const panel = $('.tomorrow-forecast-panel');
     if (panel) panel.classList.toggle('has-position', Boolean(position && position.shares > 0));
     if (!position) {
       empty.classList.remove('is-hidden');
@@ -1806,6 +1824,7 @@
         levels: ai.levels,
         conclusions: ai.conclusions,
         factors: ai.factors,
+        todayForecast: ai.todayForecast,
         forecast: ai.forecast,
         risks: ai.risks,
         scenarios: ai.scenarios,
@@ -1867,6 +1886,8 @@
       visibleSections: {
         '个股总览': visibleSectionText('#overview', 2000),
         '核心结论': visibleSectionText('#conclusion'),
+        '今日预判': visibleSectionText('.today-forecast-panel', 2500),
+        '明日预判': visibleSectionText('.tomorrow-forecast-panel', 3500),
         '近期走势': visibleSectionText('#trend', 2500),
         '技术面': visibleSectionText('#technical'),
         '资金面': visibleSectionText('#flow'),

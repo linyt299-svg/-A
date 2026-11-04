@@ -2279,6 +2279,112 @@ function nextTradingDayInfo() {
   };
 }
 
+function currentTradingDayInfo() {
+  const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
+  const weekday = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][now.getDay()];
+  return {
+    date: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`,
+    short: `${String(now.getMonth() + 1).padStart(2, '0')}.${String(now.getDate()).padStart(2, '0')}`,
+    weekday,
+    label: '今日',
+  };
+}
+
+function computeTodayForecast({ quote, technical, flow, markets, composite, levels }) {
+  const positivePrice = (value, fallback) => Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : fallback;
+  const price = positivePrice(quote.price, 0);
+  const prevClose = positivePrice(quote.prevClose, price);
+  const open = positivePrice(quote.open, prevClose || price);
+  const dayHigh = Math.max(positivePrice(quote.high, price), price);
+  const dayLow = Math.min(positivePrice(quote.low, price), price);
+  const changePct = Number.isFinite(Number(quote.changePct))
+    ? Number(quote.changePct)
+    : prevClose > 0 ? (price / prevClose - 1) * 100 : 0;
+  const openMovePct = open > 0 ? (price / open - 1) * 100 : 0;
+  const intradayPosition = dayHigh > dayLow
+    ? clamp((price - dayLow) / (dayHigh - dayLow), 0, 1)
+    : 0.5;
+  const riskScore = markets.risk && markets.risk.score != null ? markets.risk.score : 50;
+  const todayMainFlow = num(flow.today.main);
+  const flowImpulse = todayMainFlow > 0 ? 4 : todayMainFlow < 0 ? -4 : 0;
+  const volumeImpulse = Math.sign(changePct || openMovePct) * clamp((num(technical.volumeRatio, 1) - 1) * 5, -3, 6);
+  const directional =
+    clamp(changePct * 5.2, -28, 28) +
+    clamp(openMovePct * 3.4, -12, 12) +
+    (intradayPosition - 0.5) * 18 +
+    (composite - 50) * 0.28 +
+    (technical.macd.hist > 0 ? 3 : -3) +
+    flowImpulse +
+    (riskScore - 50) * 0.06 +
+    volumeImpulse;
+
+  let up = clamp(35 + directional * 0.58, 12, 72);
+  let down = clamp(35 - directional * 0.58, 12, 72);
+  let flat = clamp(100 - up - down, 16, 42);
+  const total = up + flat + down;
+  up = Math.round(up / total * 100);
+  down = Math.round(down / total * 100);
+  flat = Math.max(0, 100 - up - down);
+
+  const spread = up - down;
+  let trend = '震荡整理';
+  let tone = 'neutral';
+  if (up >= 52 || spread > 14) {
+    trend = spread >= 28 ? '偏强上行' : '震荡偏强';
+    tone = 'up';
+  } else if (down >= 52 || spread < -14) {
+    trend = spread <= -28 ? '偏弱下行' : '震荡偏弱';
+    tone = 'down';
+  }
+
+  const confidence = Math.round(clamp(
+    50 + Math.abs(spread) * 0.48 + Math.min(Math.abs(changePct) * 1.8, 7) + (technical.volumeRatio != null ? 2 : 0),
+    52,
+    76,
+  ));
+  const remainingBand = Math.min(
+    Math.max(num(technical.atr14, price * 0.018) * 0.65, price * 0.008),
+    price * 0.035,
+  );
+  const low = round(Math.min(dayLow, price - remainingBand * (tone === 'down' ? 0.9 : 0.5)));
+  const high = round(Math.max(dayHigh, price + remainingBand * (tone === 'up' ? 0.9 : 0.5)));
+  const flowText = todayMainFlow === 0
+    ? '今日主力资金净额持平'
+    : `今日主力${todayMainFlow > 0 ? '净流入' : '净流出'} ${fmtYi(Math.abs(todayMainFlow))}`;
+  const positionText = `现价处于日内区间 ${Math.round(intradayPosition * 100)}% 分位`;
+  const directionText = changePct > 0.15
+    ? `当前较昨收上涨 ${Math.abs(changePct).toFixed(2)}%`
+    : changePct < -0.15
+      ? `当前较昨收下跌 ${Math.abs(changePct).toFixed(2)}%`
+      : '当前价格接近昨收';
+  const rhythmText = tone === 'up'
+    ? `若量能维持且不跌破 ${fmtLevel(Math.max(dayLow, levels.support))}，偏强结构更容易延续；临近 ${fmtLevel(levels.resistance)} 仍需防冲高回落。`
+    : tone === 'down'
+      ? `若反抽无法收复开盘价 ${fmtLevel(open)}，弱势结构可能延续；重新站稳 ${fmtLevel(Math.min(dayHigh, levels.resistance))} 才能缓解压力。`
+      : `预计围绕开盘价 ${fmtLevel(open)} 反复，突破日内高点 ${fmtLevel(dayHigh)} 或跌破日内低点 ${fmtLevel(dayLow)} 后方向才会更清晰。`;
+  const today = currentTradingDayInfo();
+
+  return {
+    ...today,
+    trend,
+    tone,
+    confidence,
+    probabilities: { up, flat, down },
+    range: { low, high },
+    narrative:
+      `AI 判断今日为「${trend}」：上涨 ${up}% / 震荡 ${flat}% / 下跌 ${down}%。` +
+      `${directionText}，较开盘${openMovePct >= 0 ? '上涨' : '下跌'} ${Math.abs(openMovePct).toFixed(2)}%，${positionText}；` +
+      `${flowText}，量比 ${technical.volumeRatio ?? '—'}，MACD ${technical.macd.signal}。${rhythmText}`,
+    basis: [
+      directionText,
+      positionText,
+      flowText,
+      `量比 ${technical.volumeRatio ?? '—'}`,
+    ].join(' · '),
+    disclaimer: '今日预判由本地量化模型结合实时涨跌、日内位置、量能、资金与技术结构估算，仅作信息参考，不构成投资建议。',
+  };
+}
+
 function computeForecast({ quote, technical, flow, markets, composite, levels }) {
   const price = quote.price;
   const nextDay = nextTradingDayInfo();
@@ -2657,6 +2763,14 @@ function computeAi({ quote, technical, flow, reports, markets, rows, news }) {
   const support = priceLevels.support;
   const resistance = priceLevels.resistance;
   const invalidation = priceLevels.invalidation;
+  const todayForecast = computeTodayForecast({
+    quote,
+    technical,
+    flow,
+    markets,
+    composite,
+    levels: priceLevels,
+  });
   const forecast = computeForecast({
     quote,
     technical,
@@ -2806,6 +2920,7 @@ function computeAi({ quote, technical, flow, reports, markets, rows, news }) {
       supportSource: priceLevels.supportSource,
       resistanceSource: priceLevels.resistanceSource,
     },
+    todayForecast,
     forecast,
     conclusions: {
       ai: {
@@ -3101,11 +3216,15 @@ function auditCopilotContext(context) {
     }
   }
 
-  const probs = analysis.forecast && analysis.forecast.probabilities;
-  if (probs) {
+  [
+    ['今日', analysis.todayForecast],
+    ['明日', analysis.forecast],
+  ].forEach(([label, forecast]) => {
+    const probs = forecast && forecast.probabilities;
+    if (!probs) return;
     const sum = num(probs.up) + num(probs.flat) + num(probs.down);
-    if (Math.abs(sum - 100) > 1) issues.push(`明日预判三项概率合计为 ${sum.toFixed(1)}%，不是 100%。`);
-  }
+    if (Math.abs(sum - 100) > 1) issues.push(`${label}预判三项概率合计为 ${sum.toFixed(1)}%，不是 100%。`);
+  });
   if (context.stale) issues.push('当前使用的是历史快照，结论可能落后于最新行情。');
   return { issues, corrections };
 }
@@ -3134,6 +3253,12 @@ function localCopilotAnswer(question, context) {
       ? `我检查了当前页面，发现 ${audit.issues.length} 个需要核对的问题：\n${audit.issues.map((item, index) => `${index + 1}. ${item}`).join('\n')}\n\n下方只会修改页面展示，不会改写上游行情源；请确认后再应用。`
       : '已核对当前价与日内高低、支撑/压力方向、预测概率、数据时效及页面显示值，暂未发现明确的结构性矛盾。免费行情可能延时，关键决策仍建议对照公告和交易所数据。';
     citations = ['个股总览', '核心结论', '明日预判'];
+  } else if (/今日.*(趋势|走势|预判|怎么走|收盘)|今天.*(趋势|走势|预判|怎么走|收盘)/.test(q)) {
+    const todayForecast = analysis.todayForecast || {};
+    answer = todayForecast.narrative
+      ? `${name}${todayForecast.narrative}${todayForecast.basis ? ` 主要依据：${todayForecast.basis}。` : ''}`
+      : `${name}的今日趋势预判暂未生成，请刷新行情后再试。`;
+    citations = ['今日预判', '个股总览', '资金面'];
   } else if (/为什么.*(涨|上涨)|上涨.*原因|今天.*(涨|走强)|为何.*(涨|走强)/.test(q)) {
     const latest = safeArray(news.latest);
     const positive = latest.find((item) => num(item.impact_score) > 0 && item.verified !== false) || latest.find((item) => num(item.impact_score) > 0);

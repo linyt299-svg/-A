@@ -3598,6 +3598,12 @@ b, strong {
     rgba(251, 250, 245, 0.95);
 }
 
+.today-forecast-panel {
+  background:
+    radial-gradient(280px 170px at 100% 0%, rgba(69, 139, 116, 0.16), transparent 70%),
+    rgba(251, 250, 245, 0.95);
+}
+
 .forecast-panel.has-position .quant-title,
 .forecast-panel.has-position .quant-quick,
 .forecast-panel.has-position .quant-lines,

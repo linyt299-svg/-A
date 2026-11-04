@@ -528,7 +528,35 @@
           <p class="ai-disclaimer">模型输出仅作信息参考，不构成投资建议。市场有风险，决策需独立判断。</p>
         </section>
 
-        <section class="panel forecast-panel" aria-label="明日趋势预判与量化操作指导">
+        <section class="panel forecast-panel today-forecast-panel" aria-label="今日趋势预判">
+          <div class="forecast-head">
+            <div>
+              <p class="panel-kicker">TODAY OUTLOOK</p>
+              <div class="title-with-badge">
+                <h2>今日趋势预判</h2>
+                <span class="soft-badge" id="todayForecastDate">—</span>
+              </div>
+            </div>
+            <span class="forecast-conf" id="todayForecastConfidence">—</span>
+          </div>
+          <div class="forecast-hero">
+            <b id="todayForecastTrend">—</b>
+            <span id="todayForecastDirection">—</span>
+          </div>
+          <div class="forecast-probs" id="todayForecastProbs"></div>
+          <div class="forecast-range">
+            <span>预计日内区间</span>
+            <b id="todayForecastRange">—</b>
+          </div>
+          <p class="forecast-basis" id="todayForecastBasis">—</p>
+          <div class="forecast-ai">
+            <span class="ai-mini">AI</span>
+            <p id="todayForecastNarrative">—</p>
+          </div>
+          <p class="forecast-disclaimer">实时量化估算，盘中信号变化会影响结果，仅作信息参考。</p>
+        </section>
+
+        <section class="panel forecast-panel tomorrow-forecast-panel" aria-label="明日趋势预判与量化操作指导">
           <div class="forecast-head">
             <div>
               <p class="panel-kicker">TOMORROW OUTLOOK</p>

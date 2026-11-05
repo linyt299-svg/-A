@@ -2,7 +2,7 @@ services:
   - type: web
     name: guanlan-stocklens
     runtime: docker
-    plan: free
+    plan: starter
     region: singapore
     healthCheckPath: /api/health
     autoDeploy: true
@@ -11,3 +11,13 @@ services:
         value: 0.0.0.0
       - key: NODE_ENV
         value: production
+      - key: STOCKLENS_DATA_DIR
+        value: /var/data/stocklens
+      - key: APP_ENCRYPTION_KEY
+        generateValue: true
+      - key: SUPER_ADMIN_PASSWORD
+        sync: false
+    disk:
+      name: stocklens-data
+      mountPath: /var/data
+      sizeGB: 1

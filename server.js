@@ -51,6 +51,13 @@ const AI_MODEL = process.env.AI_MODEL || 'gpt-4o-mini';
 const NEWS_API_URL = String(process.env.NEWS_API_URL || '').trim();
 const NEWS_API_KEY = String(process.env.NEWS_API_KEY || '').trim();
 const NEWS_PROVIDER = String(process.env.NEWS_PROVIDER || (NEWS_API_URL ? 'custom' : '10jqka')).trim().toLowerCase();
+const DATA_DIR = path.resolve(process.env.STOCKLENS_DATA_DIR || path.join(ROOT, 'data', 'runtime'));
+const APP_STATE_FILE = path.join(DATA_DIR, 'app-state.json');
+const ALERT_LOG_FILE = path.join(DATA_DIR, 'alert-delivery.log');
+const ALERT_WEBHOOK_URL = String(process.env.ALERT_WEBHOOK_URL || '').trim();
+const APP_ENCRYPTION_KEY = crypto.createHash('sha256')
+  .update(String(process.env.APP_ENCRYPTION_KEY || 'stocklens-local-development-key'), 'utf8')
+  .digest();
 
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
@@ -72,7 +79,6 @@ const DEFAULT_WATCHLIST = ['600519', '300750', '002594', '601318', '000858', '68
 
 // The initial account is stored as one-way hashes. The plaintext password is
 // never shipped to the browser or kept in this repository.
-const AUTH_ACCOUNT_HASH = '86c935cfc206c3943810df82ff160f3d3d95e133268844c6da119d8ceb6a0397';
 const AUTH_PASSWORD_SALT = 'c9512fbe59a93d1c2a74c394fa736d57';
 const AUTH_PASSWORD_HASH = '92306e62802ec1f0c3ed419a2821ae8dbf9b5208735f998d032e9fec2def227ee1475b4f048d76dbdad90ebcc653b4c707421434e78bb1837f506219e84c1186';
 const AUTH_COOKIE = 'stocklens_session';
@@ -82,6 +88,13 @@ const AUTH_SESSIONS = new Map();
 const LOGIN_ATTEMPTS = new Map();
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_FAILURES = 5;
+const SUPER_ADMIN_PHONE = '15759863163';
+const PASSWORD_MIN_LENGTH = 8;
+const APP_STATE = {
+  users: [],
+  alerts: [],
+  alertDedupe: {},
+};
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -173,15 +186,152 @@ function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
-function digest(value) {
-  return crypto.createHash('sha256').update(String(value), 'utf8').digest();
-}
-
 function safeEqual(actual, expected) {
   const left = Buffer.isBuffer(actual) ? actual : Buffer.from(String(actual), 'hex');
   const right = Buffer.isBuffer(expected) ? expected : Buffer.from(String(expected), 'hex');
   return left.length === right.length && crypto.timingSafeEqual(left, right);
 }
+
+function publicUser(user) {
+  return {
+    id: user.id,
+    phone: user.phone,
+    displayName: user.displayName,
+    role: user.role,
+    permissions: user.role === 'super_admin'
+      ? ['manage_self', 'manage_ai_settings', 'create_sub_accounts', 'view_sub_accounts']
+      : ['manage_self', 'manage_ai_settings'],
+    ai: {
+      configured: Boolean(user.aiKeyEncrypted),
+      maskedKey: user.aiKeyLast4 ? `••••••••${user.aiKeyLast4}` : '',
+      baseUrl: user.aiBaseUrl || AI_BASE_URL,
+      model: user.aiModel || AI_MODEL,
+      updatedAt: user.aiUpdatedAt || null,
+    },
+  };
+}
+
+function appStatePayload() {
+  return JSON.stringify({
+    version: 1,
+    users: APP_STATE.users,
+    alerts: APP_STATE.alerts.slice(-500),
+    alertDedupe: APP_STATE.alertDedupe,
+  }, null, 2);
+}
+
+function persistAppStateSync() {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  const temporary = `${APP_STATE_FILE}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, appStatePayload(), { encoding: 'utf8', mode: 0o600 });
+  fs.renameSync(temporary, APP_STATE_FILE);
+}
+
+let appStateWriteQueue = Promise.resolve();
+function persistAppState() {
+  appStateWriteQueue = appStateWriteQueue.then(async () => {
+    await fsp.mkdir(DATA_DIR, { recursive: true });
+    const temporary = `${APP_STATE_FILE}.${process.pid}.tmp`;
+    await fsp.writeFile(temporary, appStatePayload(), { encoding: 'utf8', mode: 0o600 });
+    await fsp.rename(temporary, APP_STATE_FILE);
+  }).catch((error) => console.error('[state-write]', error.message));
+  return appStateWriteQueue;
+}
+
+function loadAppState() {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  try {
+    const stored = JSON.parse(fs.readFileSync(APP_STATE_FILE, 'utf8'));
+    APP_STATE.users = safeArray(stored.users);
+    APP_STATE.alerts = safeArray(stored.alerts);
+    APP_STATE.alertDedupe = stored.alertDedupe && typeof stored.alertDedupe === 'object' ? stored.alertDedupe : {};
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.error('[state-load]', error.message);
+  }
+  if (!APP_STATE.users.some((user) => user.phone === SUPER_ADMIN_PHONE)) {
+    const bootstrapPassword = String(process.env.SUPER_ADMIN_PASSWORD || '');
+    APP_STATE.users.push({
+      id: 'user_super_admin',
+      phone: SUPER_ADMIN_PHONE,
+      displayName: '超级管理员',
+      role: 'super_admin',
+      ...(bootstrapPassword.length >= PASSWORD_MIN_LENGTH
+        ? passwordRecord(bootstrapPassword)
+        : { passwordSalt: AUTH_PASSWORD_SALT, passwordHash: AUTH_PASSWORD_HASH }),
+      parentId: null,
+      createdAt: new Date().toISOString(),
+    });
+    persistAppStateSync();
+  }
+  if (process.env.NODE_ENV === 'production' && !process.env.APP_ENCRYPTION_KEY) {
+    console.warn('[security] APP_ENCRYPTION_KEY 未配置，线上保存的 AI Key 无法获得独立密钥保护');
+  }
+}
+
+function findUserByPhone(phone) {
+  return APP_STATE.users.find((user) => user.phone === String(phone || '').trim());
+}
+
+function findUserById(id) {
+  return APP_STATE.users.find((user) => user.id === id);
+}
+
+function passwordRecord(password) {
+  const salt = crypto.randomBytes(16);
+  return {
+    passwordSalt: salt.toString('hex'),
+    passwordHash: crypto.scryptSync(String(password), salt, 64).toString('hex'),
+  };
+}
+
+function verifyUserPassword(user, password) {
+  if (!user || !user.passwordSalt || !user.passwordHash) return false;
+  const candidate = crypto.scryptSync(String(password), Buffer.from(user.passwordSalt, 'hex'), 64);
+  return safeEqual(candidate, user.passwordHash);
+}
+
+function encryptSecret(value) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', APP_ENCRYPTION_KEY, iv);
+  const encrypted = Buffer.concat([cipher.update(String(value), 'utf8'), cipher.final()]);
+  return [iv, cipher.getAuthTag(), encrypted].map((part) => part.toString('base64url')).join('.');
+}
+
+function decryptSecret(value) {
+  const [ivText, tagText, encryptedText] = String(value || '').split('.');
+  if (!ivText || !tagText || !encryptedText) return '';
+  const decipher = crypto.createDecipheriv('aes-256-gcm', APP_ENCRYPTION_KEY, Buffer.from(ivText, 'base64url'));
+  decipher.setAuthTag(Buffer.from(tagText, 'base64url'));
+  return Buffer.concat([
+    decipher.update(Buffer.from(encryptedText, 'base64url')),
+    decipher.final(),
+  ]).toString('utf8');
+}
+
+function userAiConfig(user) {
+  if (user && user.aiKeyEncrypted) {
+    try {
+      return {
+        apiKey: decryptSecret(user.aiKeyEncrypted),
+        baseUrl: user.aiBaseUrl || AI_BASE_URL,
+        model: user.aiModel || AI_MODEL,
+      };
+    } catch (error) {
+      console.error('[ai-key-decrypt]', user.id, error.message);
+    }
+  }
+  return { apiKey: AI_API_KEY, baseUrl: AI_BASE_URL, model: AI_MODEL };
+}
+
+function canManageAiSettings(actor, targetUserId) {
+  return Boolean(actor && actor.id && actor.id === targetUserId);
+}
+
+function canCreateSubAccounts(actor) {
+  return Boolean(actor && actor.role === 'super_admin' && actor.phone === SUPER_ADMIN_PHONE);
+}
+
+loadAppState();
 
 function parseCookies(req) {
   return String(req.headers.cookie || '').split(';').reduce((cookies, part) => {
@@ -226,10 +376,10 @@ function getSession(req) {
   return { token, ...session };
 }
 
-function createSession(remember) {
+function createSession(userId, remember) {
   const token = crypto.randomBytes(32).toString('base64url');
   const ttl = remember ? REMEMBER_TTL_MS : SESSION_TTL_MS;
-  AUTH_SESSIONS.set(token, { expiresAt: Date.now() + ttl });
+  AUTH_SESSIONS.set(token, { userId, expiresAt: Date.now() + ttl });
   return { token, ttl };
 }
 
@@ -256,9 +406,8 @@ function recordLoginFailure(attempt) {
 }
 
 function verifyCredentials(account, password) {
-  const accountOk = safeEqual(digest(String(account).trim()), AUTH_ACCOUNT_HASH);
-  const candidate = crypto.scryptSync(String(password), Buffer.from(AUTH_PASSWORD_SALT, 'hex'), 64);
-  return accountOk && safeEqual(candidate, AUTH_PASSWORD_HASH);
+  const user = findUserByPhone(account);
+  return verifyUserPassword(user, password) ? user : null;
 }
 
 function eastmoneyDate(d = new Date()) {
@@ -2536,6 +2685,8 @@ function computeQuantAlert({ price, composite, confidence, scoreTechnical, score
   const pullbackBuffer = Math.max(atr * 0.7, price * 0.012);
   const buyZoneTop = round(Math.min(support + pullbackBuffer, resistance * 0.985));
   const profitZoneBottom = round(Math.max(resistance - pullbackBuffer, support * 1.015));
+  const buyZoneBottom = round(Math.min(support, buyZoneTop));
+  const sellZoneTop = round(Math.max(resistance + atr * 0.35, profitZoneBottom));
   const riskTrigger = round(Math.max(invalidation, ma20));
   const pullbackTriggered = price <= buyZoneTop && buyMet >= 3 && composite >= 60;
   const breakoutTriggered = price >= resistance && buyMet >= 3 && volumeRatio >= 1.2;
@@ -2665,6 +2816,22 @@ function computeQuantAlert({ price, composite, confidence, scoreTechnical, score
     conditions,
     rule,
     refreshSeconds: 30,
+    priceAdvice: {
+      buy: {
+        lower: buyZoneBottom,
+        upper: buyZoneTop,
+        condition: `综合研判不低于 60，且多头条件至少满足 3/4；突破买入还需放量站稳 ${fmtLevel(resistance)} 元`,
+      },
+      sell: {
+        lower: profitZoneBottom,
+        upper: sellZoneTop,
+        riskPrice: riskTrigger,
+        condition: `进入压力区后 RSI6 ≥ 70 且资金或 MACD 转弱；若跌至 ${fmtLevel(riskTrigger)} 元以下则按风险卖出处理`,
+      },
+      basis: `支撑 ${fmtLevel(support)} 元、压力 ${fmtLevel(resistance)} 元、ATR14 ${fmtLevel(atr)} 元、MA20 ${fmtLevel(ma20)} 元及量价/资金因子`,
+      updatedAt: new Date().toISOString(),
+      disclaimer: '价格建议由量化模型动态估算，仅供信息参考，不构成投资建议或收益保证；成交滑点、突发消息和流动性可能导致实际结果偏离。',
+    },
   };
 }
 
@@ -3597,9 +3764,10 @@ function readJsonBody(req, maxBytes = 256 * 1024) {
   });
 }
 
-function aiEndpoint() {
-  if (/\/chat\/completions$/i.test(AI_BASE_URL)) return AI_BASE_URL;
-  return `${AI_BASE_URL}/chat/completions`;
+function aiEndpoint(baseUrl = AI_BASE_URL) {
+  const normalized = String(baseUrl || AI_BASE_URL).replace(/\/$/, '');
+  if (/\/chat\/completions$/i.test(normalized)) return normalized;
+  return `${normalized}/chat/completions`;
 }
 
 function parseAiJson(content) {
@@ -3774,7 +3942,7 @@ function localCopilotAnswer(question, context) {
   return normalizeCopilotResult({ answer, citations, corrections: /错误|矛盾|检查|纠错|修正|有问题/.test(q) ? audit.corrections : [] }, context, 'local');
 }
 
-async function cloudCopilotAnswer(question, messages, context) {
+async function cloudCopilotAnswer(question, messages, context, aiConfig) {
   const system = `你是“观澜投研”的页面内研究助手，拥有30年丰富的炒股经验。能基于当前页面的内容作为背景，给出你对这个股票的看法和建议。\n
 回答要求：\n
 1. 使用简体中文，先给结论，再给依据；明确区分事实、模型推断和不确定性。内容尽可能简单，不要长篇大论，要言简意赅。也要注意分段。\n 
@@ -3791,14 +3959,14 @@ async function cloudCopilotAnswer(question, messages, context) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 45_000);
   try {
-    const response = await fetch(aiEndpoint(), {
+    const response = await fetch(aiEndpoint(aiConfig.baseUrl), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${AI_API_KEY}`,
+        Authorization: `Bearer ${aiConfig.apiKey}`,
       },
       body: JSON.stringify({
-        model: AI_MODEL,
+        model: aiConfig.model,
         messages: [
           { role: 'system', content: system },
           ...compactMessages.slice(0, -1),
@@ -3817,7 +3985,7 @@ async function cloudCopilotAnswer(question, messages, context) {
   }
 }
 
-async function handleAiChat(req, res) {
+async function handleAiChat(req, res, user) {
   if (req.method !== 'POST') return json(res, 405, { error: '仅支持 POST 请求' });
   try {
     const body = await readJsonBody(req);
@@ -3825,9 +3993,10 @@ async function handleAiChat(req, res) {
     const context = body.context && typeof body.context === 'object' ? body.context : null;
     if (!question) return json(res, 400, { error: '请输入问题' });
     if (!context || !context.stock) return json(res, 400, { error: '缺少当前页面上下文' });
-    if (!AI_API_KEY) return json(res, 200, localCopilotAnswer(question, context));
+    const aiConfig = userAiConfig(user);
+    if (!aiConfig.apiKey) return json(res, 200, localCopilotAnswer(question, context));
     try {
-      return json(res, 200, await cloudCopilotAnswer(question, body.messages, context));
+      return json(res, 200, await cloudCopilotAnswer(question, body.messages, context, aiConfig));
     } catch (error) {
       console.error('[ai-chat]', error.message);
       const fallback = localCopilotAnswer(question, context);
@@ -3975,13 +4144,20 @@ async function handlePositionAdvice(url, res) {
   }
 }
 
-async function handleStock(url, res) {
+async function handleStock(url, res, user) {
   const code = normalizeCode(url.searchParams.get('code'));
   if (!code) return json(res, 400, { error: '请输入 6 位股票代码' });
   const refresh = url.searchParams.get('refresh') === '1';
   try {
     const payload = await buildStockPayload(code, { refresh });
     writeSnapshot(code, payload);
+    const alertEvent = await recordTriggeredAlert({
+      user,
+      code,
+      name: payload.quote.name,
+      alert: payload.ai && payload.ai.quantAlert,
+    });
+    if (alertEvent) payload.alertDelivery = alertEvent;
     return json(res, 200, payload);
   } catch (error) {
     console.error('[stock]', code, error.message);
@@ -4051,6 +4227,168 @@ async function handleSearch(url, res) {
   }
 }
 
+async function appendAlertLog(entry) {
+  try {
+    await fsp.mkdir(DATA_DIR, { recursive: true });
+    await fsp.appendFile(ALERT_LOG_FILE, `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`, { encoding: 'utf8', mode: 0o600 });
+  } catch (error) {
+    console.error('[alert-log]', error.message);
+  }
+}
+
+async function deliverAlertWebhook(alert, webhookUrl = ALERT_WEBHOOK_URL, options = {}) {
+  const fetchImpl = options.fetchImpl || fetch;
+  const logImpl = options.logImpl || appendAlertLog;
+  const persistImpl = options.persistImpl || persistAppState;
+  const sleepImpl = options.sleepImpl || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  if (!webhookUrl) {
+    alert.channels.webhook = { status: 'not_configured', attempts: 0 };
+    await logImpl({ alertId: alert.id, channel: 'webhook', status: 'not_configured' });
+    await persistImpl();
+    return;
+  }
+  let lastError = '';
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const response = await fetchImpl(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          event: 'quant_alert.triggered',
+          id: alert.id,
+          side: alert.side,
+          title: alert.title,
+          message: alert.message,
+          stock: alert.stock,
+          triggerPrice: alert.triggerPrice,
+          createdAt: alert.createdAt,
+        }),
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      alert.channels.webhook = { status: 'delivered', attempts: attempt, deliveredAt: new Date().toISOString() };
+      await logImpl({ alertId: alert.id, channel: 'webhook', status: 'delivered', attempt });
+      await persistImpl();
+      return;
+    } catch (error) {
+      lastError = error.message;
+      await logImpl({ alertId: alert.id, channel: 'webhook', status: 'retry', attempt, error: lastError });
+      if (attempt < 3) await sleepImpl(250 * (2 ** (attempt - 1)));
+    }
+  }
+  alert.channels.webhook = { status: 'failed', attempts: 3, error: lastError, failedAt: new Date().toISOString() };
+  await logImpl({ alertId: alert.id, channel: 'webhook', status: 'failed', attempts: 3, error: lastError });
+  await persistImpl();
+}
+
+async function recordTriggeredAlert({ user, code, name, alert, webhookUrl = ALERT_WEBHOOK_URL }) {
+  if (!user || !alert || alert.status !== 'triggered' || !['buy', 'sell'].includes(alert.actionKey)) return null;
+  const dedupeKey = [user.id, code, alert.actionKey, alert.triggerPrice, eastmoneyDate()].join(':');
+  const previousId = APP_STATE.alertDedupe[dedupeKey];
+  if (previousId) return APP_STATE.alerts.find((item) => item.id === previousId) || null;
+
+  const createdAt = new Date().toISOString();
+  const event = {
+    id: crypto.randomUUID(),
+    userId: user.id,
+    side: alert.actionKey,
+    title: `量化${alert.actionKey === 'buy' ? '买入' : '卖出'}提醒：${alert.title}`,
+    message: alert.summary,
+    stock: { code, name: name || code },
+    triggerPrice: alert.triggerPrice,
+    currentPrice: alert.currentPrice,
+    createdAt,
+    readAt: null,
+    channels: {
+      inApp: { status: 'delivered', attempts: 1, deliveredAt: createdAt },
+      webhook: { status: webhookUrl ? 'pending' : 'not_configured', attempts: 0 },
+    },
+  };
+  APP_STATE.alerts.push(event);
+  APP_STATE.alertDedupe[dedupeKey] = event.id;
+  await appendAlertLog({ alertId: event.id, userId: user.id, side: event.side, channel: 'in_app', status: 'delivered' });
+  await persistAppState();
+  void deliverAlertWebhook(event, webhookUrl);
+  return event;
+}
+
+async function handleAlerts(req, res, user) {
+  if (req.method === 'GET') {
+    const items = APP_STATE.alerts.filter((item) => item.userId === user.id).slice(-50).reverse();
+    return json(res, 200, { items, unread: items.filter((item) => !item.readAt).length });
+  }
+  if (req.method === 'POST') {
+    const body = await readJsonBody(req, 8 * 1024);
+    const item = APP_STATE.alerts.find((alert) => alert.id === body.id && alert.userId === user.id);
+    if (!item) return json(res, 404, { error: '提醒不存在' });
+    item.readAt = item.readAt || new Date().toISOString();
+    await persistAppState();
+    return json(res, 200, { ok: true });
+  }
+  return json(res, 405, { error: '请求方法不支持' });
+}
+
+async function handleProfile(req, res, user) {
+  if (req.method !== 'GET') return json(res, 405, { error: '仅支持 GET 请求' });
+  return json(res, 200, { user: publicUser(user) });
+}
+
+async function handleAiSettings(req, res, user) {
+  if (req.method !== 'PUT') return json(res, 405, { error: '仅支持 PUT 请求' });
+  if (!canManageAiSettings(user, user.id)) return json(res, 403, { error: '无权修改该账号的 AI 设置' });
+  const body = await readJsonBody(req, 32 * 1024);
+  const apiKey = String(body.apiKey || '').trim();
+  const baseUrl = String(body.baseUrl || AI_BASE_URL).trim().replace(/\/$/, '');
+  const model = String(body.model || AI_MODEL).trim();
+  if (body.clear === true) {
+    delete user.aiKeyEncrypted;
+    delete user.aiKeyLast4;
+  } else if (apiKey) {
+    if (apiKey.length < 12 || apiKey.length > 500) return json(res, 400, { error: 'API Key 长度不正确' });
+    user.aiKeyEncrypted = encryptSecret(apiKey);
+    user.aiKeyLast4 = apiKey.slice(-4);
+  } else if (!user.aiKeyEncrypted) {
+    return json(res, 400, { error: '请输入 API Key' });
+  }
+  if (!/^https:\/\//i.test(baseUrl)) return json(res, 400, { error: 'API 地址必须使用 HTTPS' });
+  if (!model || model.length > 100) return json(res, 400, { error: '模型名称不正确' });
+  user.aiBaseUrl = baseUrl;
+  user.aiModel = model;
+  user.aiUpdatedAt = new Date().toISOString();
+  await persistAppState();
+  return json(res, 200, { user: publicUser(user) });
+}
+
+async function handleSubAccounts(req, res, user) {
+  if (!canCreateSubAccounts(user)) return json(res, 403, { error: '仅指定超级管理员可管理子账号' });
+  if (req.method === 'GET') {
+    const items = APP_STATE.users.filter((item) => item.parentId === user.id).map(publicUser);
+    return json(res, 200, { items });
+  }
+  if (req.method !== 'POST') return json(res, 405, { error: '请求方法不支持' });
+  const body = await readJsonBody(req, 16 * 1024);
+  const phone = String(body.phone || '').trim();
+  const password = String(body.password || '');
+  const displayName = String(body.displayName || '子账号').trim().slice(0, 30);
+  if (!/^1\d{10}$/.test(phone)) return json(res, 400, { error: '请输入有效的 11 位手机号' });
+  if (findUserByPhone(phone)) return json(res, 409, { error: '该手机号已存在' });
+  if (password.length < PASSWORD_MIN_LENGTH || password.length > 200) {
+    return json(res, 400, { error: `初始密码至少 ${PASSWORD_MIN_LENGTH} 位` });
+  }
+  const child = {
+    id: crypto.randomUUID(),
+    phone,
+    displayName: displayName || '子账号',
+    role: 'member',
+    parentId: user.id,
+    ...passwordRecord(password),
+    createdAt: new Date().toISOString(),
+  };
+  APP_STATE.users.push(child);
+  await persistAppState();
+  return json(res, 201, { user: publicUser(child) });
+}
+
 async function handleLogin(req, res) {
   if (req.method !== 'POST') return json(res, 405, { error: '仅支持 POST 请求' });
   const attempt = activeLoginAttempt(req);
@@ -4064,15 +4402,16 @@ async function handleLogin(req, res) {
     const body = await readJsonBody(req, 16 * 1024);
     const account = String(body.account || '').slice(0, 80);
     const password = String(body.password || '').slice(0, 200);
-    if (!account || !password || !verifyCredentials(account, password)) {
+    const user = account && password ? verifyCredentials(account, password) : null;
+    if (!user) {
       recordLoginFailure(attempt);
       return json(res, 401, { error: '账号或密码不正确' });
     }
 
     LOGIN_ATTEMPTS.delete(attempt.key);
-    const session = createSession(Boolean(body.remember));
+    const session = createSession(user.id, Boolean(body.remember));
     res.setHeader('Set-Cookie', sessionCookie(req, session.token, Math.floor(session.ttl / 1000)));
-    return json(res, 200, { ok: true });
+    return json(res, 200, { ok: true, user: publicUser(user) });
   } catch (error) {
     return json(res, /过大/.test(error.message) ? 413 : 400, { error: '登录请求无效' });
   }
@@ -4128,11 +4467,22 @@ const server = http.createServer(async (req, res) => {
       return redirect(res, `/login?next=${encodeURIComponent(next)}`);
     }
 
+    const user = findUserById(session.userId);
+    if (!user) {
+      AUTH_SESSIONS.delete(session.token);
+      res.setHeader('Set-Cookie', clearSessionCookie(req));
+      return unauthorized(res);
+    }
+
     if (url.pathname === '/api/auth/logout') return handleLogout(req, res);
-    if (url.pathname === '/api/auth/session') return json(res, 200, { authenticated: true });
-    if (url.pathname === '/api/ai/chat') return await handleAiChat(req, res);
+    if (url.pathname === '/api/auth/session') return json(res, 200, { authenticated: true, user: publicUser(user) });
+    if (url.pathname === '/api/profile') return await handleProfile(req, res, user);
+    if (url.pathname === '/api/profile/ai-settings') return await handleAiSettings(req, res, user);
+    if (url.pathname === '/api/admin/subaccounts') return await handleSubAccounts(req, res, user);
+    if (url.pathname === '/api/alerts') return await handleAlerts(req, res, user);
+    if (url.pathname === '/api/ai/chat') return await handleAiChat(req, res, user);
     if (url.pathname === '/api/market-overview') return await handleMarketOverview(url, res);
-    if (url.pathname === '/api/stock') return await handleStock(url, res);
+    if (url.pathname === '/api/stock') return await handleStock(url, res, user);
     if (url.pathname === '/api/position-advice') return await handlePositionAdvice(url, res);
     if (url.pathname === '/api/watchlist') return await handleWatchlist(url, res);
     if (url.pathname === '/api/search') return await handleSearch(url, res);
@@ -4168,6 +4518,14 @@ module.exports = {
   buildWatchlistItem,
   buildStockPayload,
   computeQuantAlert,
+  recordTriggeredAlert,
+  deliverAlertWebhook,
+  encryptSecret,
+  decryptSecret,
+  passwordRecord,
+  verifyUserPassword,
+  canManageAiSettings,
+  canCreateSubAccounts,
   parseEastmoneyTrends,
   parseTencentIntraday,
   parseSinaQuote,

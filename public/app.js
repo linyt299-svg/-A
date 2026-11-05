@@ -688,21 +688,29 @@
     panel.className = `quant-alert is-${tone}${alert.status === 'triggered' ? ' is-triggered' : ''}`;
     $('#quantAlertAction').textContent = `${alert.actionLabel || '观望'} · ${alert.statusLabel || '监控中'}`;
     $('#quantAlertAction').className = `signal-badge ${tone}`;
-    $('#quantAlertConfidence').textContent = `置信度 ${num(alert.confidence)}%`;
     $('#quantAlertTitle').textContent = alert.title || '量化条件尚未形成共振';
     $('#quantAlertText').textContent = alert.summary || '等待实时价格与量价条件确认。';
     $('#quantAlertRule').textContent = alert.rule || '—';
-    $('#quantAlertTriggerLabel').textContent = alert.triggerLabel || '触发价';
-    $('#quantAlertTriggerPrice').textContent = `${fmtPrice(alert.triggerPrice)} 元`;
-    $('#quantAlertCurrentPrice').textContent = `${fmtPrice(alert.currentPrice)} 元`;
-    $('#quantAlertDistance').textContent = alert.status === 'triggered'
-      ? '已到达'
-      : `${num(alert.distancePct).toFixed(2)}%`;
-    $('#quantAlertScore').textContent = `${num(alert.signalScore).toFixed(0)} / 100`;
-    $('#quantAlertConfidenceFill').style.width = `${clamp(num(alert.confidence), 0, 100)}%`;
     $('#quantAlertConditions').innerHTML = (alert.conditions || []).map((condition) => `
       <span class="quant-condition${condition.met ? ' is-met' : ''}">${escapeHtml(condition.label)}</span>
     `).join('');
+    const advice = alert.priceAdvice || {};
+    const buy = advice.buy || {};
+    const sell = advice.sell || {};
+    $('#quantBuyRange').textContent = Number.isFinite(Number(buy.lower)) && Number.isFinite(Number(buy.upper))
+      ? `${fmtPrice(buy.lower)}–${fmtPrice(buy.upper)} 元`
+      : '—';
+    $('#quantSellRange').textContent = Number.isFinite(Number(sell.lower)) && Number.isFinite(Number(sell.upper))
+      ? `${fmtPrice(sell.lower)}–${fmtPrice(sell.upper)} 元${sell.riskPrice ? `；风险价 ${fmtPrice(sell.riskPrice)} 元` : ''}`
+      : '—';
+    $('#quantPriceBasis').textContent = advice.basis
+      ? `依据：${advice.basis}。买入条件：${buy.condition || '—'}；卖出条件：${sell.condition || '—'}`
+      : '—';
+    const adviceTime = new Date(advice.updatedAt || state.data.generatedAt);
+    $('#quantPriceUpdated').textContent = Number.isNaN(adviceTime.getTime())
+      ? '更新时间：—'
+      : `更新时间：${adviceTime.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}`;
+    $('#quantPriceRisk').textContent = advice.disclaimer || '量化估算仅供信息参考，不构成投资建议或收益保证。';
 
     const generated = new Date(state.data.generatedAt);
     const generatedTime = Number.isNaN(generated.getTime())

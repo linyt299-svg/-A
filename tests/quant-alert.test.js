@@ -43,6 +43,10 @@ test('triggers a pullback buy alert when price and confirmations align', () => {
   assert.equal(alert.distancePct, 0);
   assert.ok(alert.metCount >= 3);
   assert.ok(alert.confidence >= 48 && alert.confidence <= 93);
+  assert.ok(alert.priceAdvice.buy.lower <= alert.priceAdvice.buy.upper);
+  assert.ok(alert.priceAdvice.sell.lower <= alert.priceAdvice.sell.upper);
+  assert.match(alert.priceAdvice.basis, /支撑/);
+  assert.match(alert.priceAdvice.disclaimer, /不构成投资建议|收益保证/);
 });
 
 test('triggers a sell alert below the quantitative risk line', () => {
@@ -71,6 +75,7 @@ test('triggers a sell alert below the quantitative risk line', () => {
   assert.equal(alert.actionKey, 'sell');
   assert.equal(alert.triggerPrice, 94);
   assert.equal(alert.metCount, 4);
+  assert.ok(alert.priceAdvice.sell.riskPrice > 0);
 });
 
 test('keeps a neutral setup in monitoring state', () => {
@@ -98,4 +103,25 @@ test('keeps a neutral setup in monitoring state', () => {
   assert.equal(alert.status, 'watching');
   assert.equal(alert.actionKey, 'watch');
   assert.ok(alert.distancePct > 0);
+});
+
+test('buy and sell simulations both expose deliverable alert payloads', () => {
+  const buy = computeQuantAlert(input());
+  const sell = computeQuantAlert(input({
+    price: 90,
+    composite: 34,
+    scoreTechnical: 31,
+    scoreCapital: 28,
+    technical: { atr14: 2.2, volumeRatio: 1.3, ma: { ma20: 94 }, maBearish: true, macd: { hist: -0.4, signal: '死叉' }, rsi: { rsi6: 35 } },
+    flow: { historyAvailable: true, sum5: -2_000_000, today: { main: -500_000 } },
+    levels: { support: 88, resistance: 95, invalidation: 86 },
+  }));
+  for (const [side, alert] of [['buy', buy], ['sell', sell]]) {
+    assert.equal(alert.status, 'triggered');
+    assert.equal(alert.actionKey, side);
+    assert.ok(alert.title);
+    assert.ok(alert.summary);
+    assert.ok(alert.triggerPrice > 0);
+    assert.ok(alert.rule);
+  }
 });

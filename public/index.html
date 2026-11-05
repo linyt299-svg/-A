@@ -237,29 +237,35 @@
             </article>
 
             <article class="quant-alert" id="quantAlert" aria-live="polite">
-              <div class="quant-alert-main">
-                <div class="quant-alert-head">
+              <div class="quant-alert-head">
+                <div class="quant-alert-heading">
                   <span class="quant-alert-icon"><svg class="icon"><use href="#i-bell"/></svg></span>
                   <div class="quant-alert-label">
                     <span>实时量化提醒</span>
                     <small id="quantAlertFreshness">交易时段每 30 秒更新</small>
                   </div>
-                  <em class="signal-badge neutral" id="quantAlertAction">观望 · 监控中</em>
-                  <strong id="quantAlertConfidence">置信度 —</strong>
                 </div>
-                <h3 id="quantAlertTitle">量化条件计算中</h3>
-                <p id="quantAlertText">正在结合实时价格、技术结构与主力资金计算触发条件。</p>
-                <div class="quant-alert-rule"><span>触发规则</span><b id="quantAlertRule">—</b></div>
-                <div class="quant-alert-conditions" id="quantAlertConditions"></div>
+                <div class="quant-alert-status">
+                  <em class="signal-badge neutral" id="quantAlertAction">观望 · 监控中</em>
+                </div>
               </div>
-              <div class="quant-alert-metrics">
-                <div><span id="quantAlertTriggerLabel">触发价</span><b id="quantAlertTriggerPrice">—</b></div>
-                <div><span>当前价</span><b id="quantAlertCurrentPrice">—</b></div>
-                <div><span>距触发</span><b id="quantAlertDistance">—</b></div>
-                <div><span>信号强度</span><b id="quantAlertScore">—</b></div>
-                <div class="quant-confidence-meter">
-                  <span>模型置信度</span>
-                  <i><b id="quantAlertConfidenceFill"></b></i>
+              <div class="quant-alert-body">
+                <div class="quant-alert-main">
+                  <div class="quant-alert-overview">
+                    <h3 id="quantAlertTitle">量化条件计算中</h3>
+                    <p id="quantAlertText">正在结合实时价格、技术结构与主力资金计算触发条件。</p>
+                    <div class="quant-alert-rule"><span>触发规则</span><b id="quantAlertRule">—</b></div>
+                    <div class="quant-alert-conditions" id="quantAlertConditions"></div>
+                  </div>
+                  <div class="quant-price-advice">
+                    <div class="quant-price-ranges">
+                      <p><span>建议买入区间</span><b id="quantBuyRange">—</b></p>
+                      <p><span>建议卖出区间</span><b id="quantSellRange">—</b></p>
+                    </div>
+                    <small id="quantPriceBasis">—</small>
+                    <small id="quantPriceUpdated">—</small>
+                    <em id="quantPriceRisk">量化估算仅供参考，不构成投资建议。</em>
+                  </div>
                 </div>
               </div>
             </article>

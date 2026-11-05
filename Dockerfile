@@ -9,6 +9,7 @@ COPY package.json server.js news-engine.js ./
 COPY public ./public
 COPY data/news.json ./data/news.json
 COPY data/snapshots/market-overview.json ./data/snapshots/market-overview.json
+RUN mkdir -p /app/data/runtime
 
 EXPOSE 4173
 CMD ["node", "server.js"]

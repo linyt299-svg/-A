@@ -6,6 +6,12 @@
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
   const STORAGE_KEY = 'guanlan.watchlist.v1';
   const LAST_CODE_KEY = 'guanlan.lastCode.v1';
+  const WATCH_EVENT_SEEN_KEY = 'guanlan.watch-events.seen.v1';
+  const WATCH_EVENT_POLL_MS = 60_000;
+  const ALERT_POLL_MS = 30_000;
+  const TOAST_DURATION_MS = 3_000;
+  const QUANT_ALERT_HISTORY_KEY = 'guanlan.quant-alert-history.v1';
+  const QUANT_ALERT_STATES_KEY = 'guanlan.quant-alert-states.v1';
   const DEFAULT_WATCHLIST = ['600519', '300750', '002594', '601318', '000858', '688981'];
   const RANGE_COUNT = { '1M': 22, '3M': 66, '6M': 132, '1Y': 250 };
   const CORRECTION_KEY_PREFIX = 'guanlan.ai-corrections.v1.';
@@ -48,7 +54,15 @@
     searchTimer: null,
     toastTimer: null,
     autoTimer: null,
-    quantAlertStates: {},
+    watchEventTimer: null,
+    alertTimer: null,
+    alertChecking: false,
+    watchEventChecking: false,
+    watchEventQueue: [],
+    activeWatchEvent: null,
+    seenWatchEvents: loadSeenWatchEvents(),
+    quantAlertStates: loadQuantAlertStates(),
+    quantAlertHistory: loadQuantAlertHistory(),
     copilotHistory: [],
     copilotBusy: false,
     copilotSeq: 0,
@@ -203,7 +217,163 @@
     clearTimeout(state.toastTimer);
     state.toastTimer = setTimeout(() => {
       el.classList.remove('is-visible');
-    }, 2600);
+    }, TOAST_DURATION_MS);
+  }
+
+  function loadSeenWatchEvents() {
+    try {
+      const value = JSON.parse(localStorage.getItem(WATCH_EVENT_SEEN_KEY) || '{}');
+      return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function loadQuantAlertHistory() {
+    try {
+      const value = JSON.parse(sessionStorage.getItem(QUANT_ALERT_HISTORY_KEY) || '[]');
+      return Array.isArray(value) ? value : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function saveQuantAlertHistory() {
+    try {
+      sessionStorage.setItem(QUANT_ALERT_HISTORY_KEY, JSON.stringify(state.quantAlertHistory));
+    } catch {}
+  }
+
+  function loadQuantAlertStates() {
+    try {
+      const value = JSON.parse(sessionStorage.getItem(QUANT_ALERT_STATES_KEY) || '{}');
+      return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function saveQuantAlertStates() {
+    try {
+      sessionStorage.setItem(QUANT_ALERT_STATES_KEY, JSON.stringify(state.quantAlertStates));
+    } catch {}
+  }
+
+  function saveSeenWatchEvents() {
+    const entries = Object.entries(state.seenWatchEvents)
+      .sort((left, right) => Number(right[1]) - Number(left[1]))
+      .slice(0, 300);
+    state.seenWatchEvents = Object.fromEntries(entries);
+    localStorage.setItem(WATCH_EVENT_SEEN_KEY, JSON.stringify(state.seenWatchEvents));
+  }
+
+  async function checkInAppAlerts() {
+    if (state.alertChecking) return;
+    state.alertChecking = true;
+    try {
+      const response = await fetch('/api/alerts', { cache: 'no-store' });
+      if (!response.ok) return;
+      const payload = await response.json();
+      const item = (payload.items || []).find((alert) => !alert.readAt);
+      if (!item) return;
+      toast(`${formatAlertStock(item.stock)}触发：${item.title}；${item.message}`, item.side === 'sell' ? 'error' : '');
+      await fetch('/api/alerts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: item.id }),
+      });
+    } catch (error) {
+      console.warn('[alerts]', error.message);
+    } finally {
+      state.alertChecking = false;
+    }
+  }
+
+  function formatWatchEventTime(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '刚刚获取';
+    return date.toLocaleString('zh-CN', {
+      timeZone: 'Asia/Shanghai',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+  }
+
+  function showNextWatchEvent() {
+    const dialog = $('#watchEventDialog');
+    if (!dialog || dialog.open || !state.watchEventQueue.length) return;
+    if ($$('dialog[open]').some((item) => item !== dialog)) return;
+    const item = state.watchEventQueue.shift();
+    state.activeWatchEvent = item;
+    $('#watchEventStock').textContent = `${item.stockName || item.code} · ${item.code}`;
+    $('#watchEventType').textContent = item.type || '利好动态';
+    $('#watchEventTitle').textContent = item.title || '发现新的自选股动态';
+    $('#watchEventSummary').textContent = item.summary || '该消息可能对公司预期形成正向影响。';
+    $('#watchEventTime').textContent = formatWatchEventTime(item.publishedAt);
+    const source = $('#watchEventSource');
+    source.hidden = !item.url;
+    source.href = item.url || '#';
+    source.title = item.source || '';
+    dialog.showModal();
+  }
+
+  function closeWatchEvent() {
+    const dialog = $('#watchEventDialog');
+    if (dialog && dialog.open) dialog.close();
+  }
+
+  function queueWatchEvents(items) {
+    const unseen = (Array.isArray(items) ? items : []).filter((item) => item && item.id && !state.seenWatchEvents[item.id]);
+    if (!unseen.length) {
+      showNextWatchEvent();
+      return;
+    }
+    const seenAt = Date.now();
+    unseen.forEach((item) => { state.seenWatchEvents[item.id] = seenAt; });
+    saveSeenWatchEvents();
+    const queuedIds = new Set(state.watchEventQueue.map((item) => item.id));
+    state.watchEventQueue.push(...unseen.slice(0, 3).filter((item) => !queuedIds.has(item.id)));
+    showNextWatchEvent();
+  }
+
+  async function checkWatchlistEvents() {
+    if (document.hidden || state.watchEventChecking || !state.watchlist.length) return;
+    state.watchEventChecking = true;
+    try {
+      const response = await fetch(`/api/watchlist/events?codes=${encodeURIComponent(state.watchlist.join(','))}`, { cache: 'no-store' });
+      if (!response.ok) return;
+      const payload = await response.json();
+      queueWatchEvents(payload.items);
+    } catch (error) {
+      console.warn('[watchlist-events]', error.message);
+    } finally {
+      state.watchEventChecking = false;
+    }
+  }
+
+  function bindWatchEventDialog() {
+    const dialog = $('#watchEventDialog');
+    if (!dialog) return;
+    $('#watchEventCloseBtn').addEventListener('click', closeWatchEvent);
+    $('#watchEventDismissBtn').addEventListener('click', closeWatchEvent);
+    $('#watchEventViewBtn').addEventListener('click', () => {
+      const item = state.activeWatchEvent;
+      closeWatchEvent();
+      if (item && item.code) loadStock(item.code);
+    });
+    dialog.addEventListener('close', () => {
+      state.activeWatchEvent = null;
+      setTimeout(showNextWatchEvent, 160);
+    });
+    dialog.addEventListener('click', (event) => {
+      const rect = dialog.getBoundingClientRect();
+      const inside = event.clientX >= rect.left && event.clientX <= rect.right
+        && event.clientY >= rect.top && event.clientY <= rect.bottom;
+      if (!inside) closeWatchEvent();
+    });
   }
 
   function setLoading(active) {
@@ -258,6 +428,7 @@
     state.watchlist.push(code);
     saveWatchlist();
     refreshWatchlist();
+    setTimeout(checkWatchlistEvents, 0);
     updateStar();
     if (!silent) toast('已加入自选');
     return true;
@@ -537,6 +708,7 @@
     const changedStock = state.code !== normalized;
     state.code = normalized;
     if (changedStock) resetCopilotConversation();
+    renderQuantAlertHistory();
     localStorage.setItem(LAST_CODE_KEY, normalized);
     state.positionAdvice = null;
     if ($('#positionDialog').open) closePositionDialog();
@@ -679,8 +851,80 @@
     return '与现价持平';
   }
 
-  function renderQuantAlert() {
-    const alert = state.data.ai && state.data.ai.quantAlert;
+  function getPresentationModel() {
+    const ai = state.data.ai || {};
+    if (!window.StockLensPresentation || typeof window.StockLensPresentation.normalize !== 'function') {
+      return {
+        alert: ai.quantAlert || {},
+        risk: { visible: true, kind: 'defense', label: '风险防守位', value: ai.quantAlert?.priceAdvice?.sell?.riskPrice },
+        conclusion: { title: '', note: '' },
+      };
+    }
+    return window.StockLensPresentation.normalize({
+      alert: ai.quantAlert,
+      price: state.data.quote && state.data.quote.price,
+      ai,
+      flow: state.data.flow,
+      technical: state.data.technical,
+    });
+  }
+
+  function formatQuantAlertTime(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '刚刚';
+    return date.toLocaleTimeString('zh-CN', {
+      timeZone: 'Asia/Shanghai',
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  }
+
+  function formatAlertStock(stock = {}) {
+    const code = normalizeCode(stock.code) || state.code;
+    const name = String(stock.name || '').trim();
+    return name && name !== code ? `${name}（${code}）` : code;
+  }
+
+  function getCurrentQuantAlertHistory() {
+    return state.quantAlertHistory.filter((item) => normalizeCode(item && item.code) === state.code);
+  }
+
+  function renderQuantAlertHistory() {
+    const button = $('#quantAlertHistoryBtn');
+    const list = $('#quantAlertHistoryList');
+    if (!button || !list) return;
+    const currentHistory = getCurrentQuantAlertHistory();
+    button.textContent = `本页记录 ${currentHistory.length}`;
+    list.innerHTML = currentHistory.length
+      ? currentHistory.map((item) => `
+        <article class="quant-alert-history-item is-${item.actionKey === 'sell' ? 'sell' : 'buy'}">
+          <time datetime="${escapeHtml(item.createdAt)}">${escapeHtml(formatQuantAlertTime(item.createdAt))}</time>
+          <div>
+            <strong>${escapeHtml(item.stockName || item.code)} · ${escapeHtml(item.actionLabel)}</strong>
+            <p>${escapeHtml(item.title)}</p>
+          </div>
+          <span>${escapeHtml(item.code)}</span>
+        </article>`).join('')
+      : '<p class="quant-alert-history-empty">本页暂未触发量化提醒</p>';
+  }
+
+  function recordQuantAlert(alert, actionLabel) {
+    state.quantAlertHistory.unshift({
+      code: state.code,
+      stockName: state.data && state.data.quote ? state.data.quote.name : '',
+      actionKey: alert.actionKey,
+      actionLabel,
+      title: alert.title || '量化条件已触发',
+      createdAt: new Date().toISOString(),
+    });
+    saveQuantAlertHistory();
+    renderQuantAlertHistory();
+  }
+
+  function renderQuantAlert(presentation = getPresentationModel()) {
+    const alert = presentation.alert;
     const panel = $('#quantAlert');
     if (!alert || !panel) return;
 
@@ -690,7 +934,14 @@
     $('#quantAlertAction').className = `signal-badge ${tone}`;
     $('#quantAlertTitle').textContent = alert.title || '量化条件尚未形成共振';
     $('#quantAlertText').textContent = alert.summary || '等待实时价格与量价条件确认。';
-    $('#quantAlertRule').textContent = alert.rule || '—';
+    const alertRules = Array.isArray(alert.rules) ? alert.rules : [];
+    $('#quantAlertRule').innerHTML = alertRules.length
+      ? alertRules.map((rule) => `
+        <p class="quant-rule-item is-${escapeHtml(rule.status || 'waiting')}">
+          <strong>${escapeHtml(rule.label || '条件')}</strong>
+          <span>${escapeHtml(rule.text || '—')}</span>
+        </p>`).join('')
+      : escapeHtml(alert.rule || '—');
     $('#quantAlertConditions').innerHTML = (alert.conditions || []).map((condition) => `
       <span class="quant-condition${condition.met ? ' is-met' : ''}">${escapeHtml(condition.label)}</span>
     `).join('');
@@ -698,13 +949,23 @@
     const buy = advice.buy || {};
     const sell = advice.sell || {};
     $('#quantBuyRange').textContent = Number.isFinite(Number(buy.lower)) && Number.isFinite(Number(buy.upper))
-      ? `${fmtPrice(buy.lower)}–${fmtPrice(buy.upper)} 元`
+      ? `${fmtPrice(buy.lower)}–${fmtPrice(buy.upper)} 元${buy.mode === 'observe' ? '（仅观察）' : ''}`
       : '—';
     $('#quantSellRange').textContent = Number.isFinite(Number(sell.lower)) && Number.isFinite(Number(sell.upper))
-      ? `${fmtPrice(sell.lower)}–${fmtPrice(sell.upper)} 元${sell.riskPrice ? `；风险价 ${fmtPrice(sell.riskPrice)} 元` : ''}`
+      ? `${fmtPrice(sell.lower)}–${fmtPrice(sell.upper)} 元`
+      : '—';
+    $('#quantBreakoutPrice').textContent = Number.isFinite(Number(buy.breakoutPrice))
+      ? `${fmtPrice(buy.breakoutPrice)} 元`
+      : '—';
+    const risk = presentation.risk || {};
+    $('#quantRiskRow').classList.toggle('is-hidden', !risk.visible);
+    $('#quantRiskRow').classList.toggle('is-overhead', risk.kind === 'overhead');
+    $('#quantRiskLabel').textContent = risk.label || '风险防守位';
+    $('#quantRiskPrice').textContent = Number.isFinite(Number(risk.value))
+      ? `${fmtPrice(risk.value)} 元`
       : '—';
     $('#quantPriceBasis').textContent = advice.basis
-      ? `依据：${advice.basis}。买入条件：${buy.condition || '—'}；卖出条件：${sell.condition || '—'}`
+      ? `依据：${advice.basis}。低吸/右侧条件：${buy.condition || '—'}；减仓/防守条件：${sell.condition || '—'}`
       : '—';
     const adviceTime = new Date(advice.updatedAt || state.data.generatedAt);
     $('#quantPriceUpdated').textContent = Number.isNaN(adviceTime.getTime())
@@ -731,12 +992,15 @@
       && (!previous || previous.status !== 'triggered' || previous.actionKey !== alert.actionKey);
     if (newlyTriggered && !state.data.stale) {
       const verb = alert.actionKey === 'sell' ? '卖出/止盈' : alert.actionKey === 'buy' ? '买入' : '观察';
-      setTimeout(() => toast(`量化${verb}提醒：${alert.title}`, alert.actionKey === 'sell' ? 'error' : ''), 80);
+      recordQuantAlert(alert, verb);
+      const stock = state.data && state.data.quote ? state.data.quote : { code: state.code };
+      setTimeout(() => toast(`${formatAlertStock(stock)}触发量化${verb}提醒：${alert.title}`, alert.actionKey === 'sell' ? 'error' : ''), 80);
     }
     state.quantAlertStates[state.code] = {
       status: alert.status,
       actionKey: alert.actionKey,
     };
+    saveQuantAlertStates();
   }
 
   function renderConclusions() {
@@ -745,16 +1009,21 @@
     const price = state.data.quote.price;
     const c = ai.conclusions || {};
     const levels = ai.levels || {};
+    const presentation = getPresentationModel();
+    const displayConclusion = presentation.conclusion || {};
 
     $('#conclusionScore').textContent = ai.composite;
     $('#conclusionStance').textContent = ai.stance;
     $('#conclusionConfidence').textContent = `置信度 ${ai.confidence}%`;
-    $('#conclusionAdviceTitle').textContent = c.ai && c.ai.title && c.ai.title !== ai.stance
+    $('#conclusionConfidence').title = `置信度 ${ai.confidence}%：衡量数据完整性与技术、资金、机构、消息信号的一致性，不代表上涨概率。`;
+    $('#conclusionAdviceTitle').textContent = displayConclusion.title || (c.ai && c.ai.title && c.ai.title !== ai.stance
       ? c.ai.title
-      : aiActionTitle(ai);
+      : aiActionTitle(ai));
     $('#conclusionAdviceText').textContent = c.ai
       ? c.ai.text
       : '结合支撑与压力观察量价确认，未触发条件前不追涨杀跌。';
+    $('#conclusionAdviceWarning').textContent = displayConclusion.note || '';
+    $('#conclusionAdviceWarning').classList.toggle('is-hidden', !displayConclusion.note);
     $('#conclusionSupport').textContent = fmtPrice(levels.support);
     $('#conclusionResistance').textContent = fmtPrice(levels.resistance);
     const supportGap = levels.supportGap != null
@@ -767,7 +1036,7 @@
     $('#conclusionSupportGap').title = levels.supportSource ? `依据：${levels.supportSource}` : '';
     $('#conclusionResistanceGap').textContent = formatGap(resistanceGap);
     $('#conclusionResistanceGap').title = levels.resistanceSource ? `依据：${levels.resistanceSource}` : '';
-    renderQuantAlert();
+    renderQuantAlert(presentation);
 
     const technical = c.technical || {
       verdict: '中性',
@@ -976,6 +1245,50 @@
 
   function saveStoredPosition(code, position) {
     localStorage.setItem(positionStorageKey(code), JSON.stringify(position));
+    void syncStoredPosition(code, summarizePositionRecord(position));
+  }
+
+  async function syncStoredPosition(code, position) {
+    try {
+      if (!position || position.shares <= 0 || position.cost <= 0) {
+        await fetch(`/api/positions?code=${encodeURIComponent(code)}`, { method: 'DELETE' });
+        return;
+      }
+      const latest = position.latestTransaction;
+      const response = await fetch('/api/positions', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          code,
+          position: {
+            cost: position.cost,
+            shares: position.shares,
+            capital: position.capital,
+            totalBuy: position.totalBuy,
+            totalSell: position.totalSell,
+            latestSide: latest && latest.side,
+            latestAmount: latest && latest.amount,
+          },
+        }),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    } catch (error) {
+      console.warn('[position-sync]', code, error.message);
+    }
+  }
+
+  function syncAllStoredPositions() {
+    const prefix = 'guanlan.position.v2.';
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (!key || !key.startsWith(prefix)) continue;
+      const code = normalizeCode(key.slice(prefix.length));
+      if (!code) continue;
+      try {
+        const raw = JSON.parse(localStorage.getItem(key) || 'null');
+        void syncStoredPosition(code, summarizePositionRecord(raw));
+      } catch {}
+    }
   }
 
   function transactionTime(value) {
@@ -1066,9 +1379,9 @@
       latestSide: position.latestTransaction ? position.latestTransaction.side : '',
       latestAmount: position.latestTransaction ? String(position.latestTransaction.amount) : '',
     });
-    $('#positionAction').textContent = 'AI 计算中…';
+    $('#positionAction').textContent = '量化计算中…';
     $('#positionConfidence').textContent = '';
-    $('#positionAdvice').textContent = '正在结合成本、仓位、支撑压力与明日预判生成持仓建议…';
+    $('#positionAdvice').textContent = '正在按成本、仓位、压力位、盈亏比与动能规则生成持仓建议…';
     try {
       const response = await fetch(`/api/position-advice?${params.toString()}`);
       const payload = await response.json().catch(() => ({}));
@@ -1087,7 +1400,7 @@
       $('#positionAction').textContent = '建议暂不可用';
       $('#positionAction').className = 'neutral';
       $('#positionConfidence').textContent = '';
-      $('#positionAdvice').textContent = error.message || 'AI 持仓建议暂时不可用，请稍后重试。';
+      $('#positionAdvice').textContent = error.message || '量化持仓建议暂时不可用，请稍后重试。';
     }
   }
 
@@ -1198,6 +1511,7 @@
       if (readStoredPosition(state.code) && !window.confirm('确认清空该股票的全部交易记录？此操作不可撤销。')) return;
       localStorage.removeItem(positionStorageKey(state.code));
       localStorage.removeItem(legacyPositionStorageKey(state.code));
+      void syncStoredPosition(state.code, null);
       state.positionAdvice = null;
       state.positionSeq += 1;
       closePositionDialog();
@@ -2321,7 +2635,11 @@
       state.copilotHistory = state.copilotHistory.slice(-10);
       $('#copilotMode').textContent = payload.mode === 'cloud'
         ? '云端模型 · 当前页面上下文'
-        : '本地分析 · 当前页面上下文';
+        : payload.cloudError
+          ? `云端失败 · ${payload.cloudError}`
+          : payload.configured === false
+            ? '未配置模型 · 本地分析'
+            : '本地分析 · 当前页面上下文';
     } catch (error) {
       if (requestSeq !== state.copilotSeq) return;
       loading.remove();
@@ -2558,6 +2876,14 @@
       if (event.target === $('#aiDialog')) closeDialog();
     });
 
+    const quantAlertHistoryButton = $('#quantAlertHistoryBtn');
+    const quantAlertHistoryPanel = $('#quantAlertHistoryPanel');
+    quantAlertHistoryButton.addEventListener('click', () => {
+      const open = quantAlertHistoryPanel.hidden;
+      quantAlertHistoryPanel.hidden = !open;
+      quantAlertHistoryButton.setAttribute('aria-expanded', String(open));
+    });
+
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape' && $('#aiDialog').open) closeDialog();
       if (event.key === 'Escape' && $('#researchCopilot').classList.contains('is-open')) setCopilotOpen(false);
@@ -2573,6 +2899,22 @@
     }, 30_000);
   }
 
+  function startWatchEventMonitor() {
+    setTimeout(checkWatchlistEvents, 2_500);
+    state.watchEventTimer = setInterval(checkWatchlistEvents, WATCH_EVENT_POLL_MS);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) checkWatchlistEvents();
+    });
+  }
+
+  function startAlertMonitor() {
+    setTimeout(checkInAppAlerts, 1_500);
+    state.alertTimer = setInterval(checkInAppAlerts, ALERT_POLL_MS);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) checkInAppAlerts();
+    });
+  }
+
   function boot() {
     updateClock();
     setInterval(updateClock, 1000);
@@ -2580,8 +2922,10 @@
     bindWatchlistEvents();
     bindNavigation();
     bindControls();
+    bindWatchEventDialog();
     bindPosition();
     bindCopilot();
+    renderQuantAlertHistory();
     layoutAiCard();
     const layoutMedia = window.matchMedia('(max-width: 1120px)');
     if (layoutMedia.addEventListener) layoutMedia.addEventListener('change', layoutAiCard);
@@ -2589,7 +2933,10 @@
     updateStar();
     refreshWatchlist();
     loadStock(state.code);
+    syncAllStoredPositions();
     startAutoRefresh();
+    startWatchEventMonitor();
+    startAlertMonitor();
     setTimeout(() => {
       if (state.data) renderSources();
     }, 30_000);

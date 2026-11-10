@@ -1,5 +1,8 @@
 node_modules/
 .tools/
+.idea/
+__pycache__/
+*.pyc
 data/snapshots/*
 !data/snapshots/market-overview.json
 data/runtime/

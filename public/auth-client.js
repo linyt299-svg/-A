@@ -68,7 +68,7 @@
       <div class="account-popover" role="menu">
         <div class="account-popover-head"><b>${escapeHtml(user.displayName)}</b><span>${escapeHtml(user.phone.replace(/^(\d{3})\d{4}(\d{4})$/, '$1****$2'))}</span></div>
         <button type="button" data-account-action="profile"><span>个人信息</span><small>手机号与账号权限</small></button>
-        <button type="button" data-account-action="ai"><span>AI 设置</span><small>${user.ai.configured ? `已配置 ${escapeHtml(user.ai.maskedKey)}` : '配置个人 API Key'}</small></button>
+        <button type="button" data-account-action="ai"><span>AI 设置</span><small>${user.ai.configured ? `${user.ai.source === 'server' ? '服务端已配置' : '已配置'} ${escapeHtml(user.ai.maskedKey)}` : '配置个人 API Key'}</small></button>
       </div>`;
     topbar.insertBefore(wrapper, logout || null);
 
@@ -80,7 +80,7 @@
       </dialog>
       <dialog class="account-dialog" id="aiSettingsDialog">
         <form id="aiSettingsForm"><header><div><small>PERSONAL AI</small><h2>AI 设置</h2></div><button type="button" data-dialog-close aria-label="关闭">×</button></header>
-          <p class="account-dialog-note">API Key 由服务端加密保存，页面仅显示末四位。留空表示保留已保存的 Key。</p>
+          <p class="account-dialog-note">保存时会先验证模型连接。API Key 由服务端加密保存，页面仅显示末四位；留空表示使用当前有效 Key。</p>
           <label><span>API Key</span><input name="apiKey" type="password" autocomplete="off" placeholder="${user.ai.configured ? escapeHtml(user.ai.maskedKey) : 'sk-...'}" /></label>
           <label><span>API 地址</span><input name="baseUrl" type="url" required value="${escapeHtml(user.ai.baseUrl)}" /></label>
           <label><span>模型</span><input name="model" required value="${escapeHtml(user.ai.model)}" /></label>
@@ -127,12 +127,12 @@
       const form = event.currentTarget;
       const submit = form.querySelector('[type="submit"]');
       submit.disabled = true;
-      showMessage(form, '正在安全保存…');
+      showMessage(form, '正在验证模型连接并安全保存…');
       try {
         const response = await fetch('/api/profile/ai-settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.fromEntries(new FormData(form))) });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || '保存失败');
-        showMessage(form, `已保存，Key 仅显示为 ${payload.user.ai.maskedKey}`);
+        showMessage(form, `连接验证成功，已保存（${payload.user.ai.model}）`);
         form.elements.apiKey.value = '';
         wrapper.querySelector('[data-account-action="ai"] small').textContent = `已配置 ${payload.user.ai.maskedKey}`;
       } catch (error) { showMessage(form, error.message, true); }

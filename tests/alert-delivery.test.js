@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { deliverAlertWebhook } = require('../server');
+const { deliverAlertWebhook, deliverWechatWorkAlert } = require('../server');
 
 function alert(side) {
   return {
@@ -13,9 +13,31 @@ function alert(side) {
     stock: { code: '600000', name: '测试股票' },
     triggerPrice: 10,
     createdAt: new Date().toISOString(),
-    channels: { inApp: { status: 'delivered', attempts: 1 }, webhook: { status: 'pending', attempts: 0 } },
+    channels: {
+      inApp: { status: 'delivered', attempts: 1 },
+      webhook: { status: 'pending', attempts: 0 },
+      wechatWork: { status: 'pending', attempts: 0 },
+    },
   };
 }
+
+test('position alert uses the enterprise WeChat robot payload', async () => {
+  const item = alert('sell');
+  let requestBody;
+  await deliverWechatWorkAlert(item, 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test', {
+    fetchImpl: async (_url, options) => {
+      requestBody = JSON.parse(options.body);
+      return { ok: true, status: 200, json: async () => ({ errcode: 0, errmsg: 'ok' }) };
+    },
+    logImpl: async () => {},
+    persistImpl: async () => {},
+    sleepImpl: async () => {},
+  });
+
+  assert.equal(requestBody.msgtype, 'text');
+  assert.match(requestBody.text.content, /测试股票（600000）/);
+  assert.equal(item.channels.wechatWork.status, 'delivered');
+});
 
 for (const side of ['buy', 'sell']) {
   test(`${side} alert reaches webhook after bounded retries`, async () => {

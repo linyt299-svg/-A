@@ -13,6 +13,7 @@ const {
   loadNewsFeed,
   scoreNews,
 } = require('./news-engine');
+const { buildWatchlistEvents } = require('./watchlist-events');
 
 // Some networks advertise broken IPv6 routes for Eastmoney; prefer IPv4.
 dns.setDefaultResultOrder('ipv4first');
@@ -55,6 +56,8 @@ const DATA_DIR = path.resolve(process.env.STOCKLENS_DATA_DIR || path.join(ROOT, 
 const APP_STATE_FILE = path.join(DATA_DIR, 'app-state.json');
 const ALERT_LOG_FILE = path.join(DATA_DIR, 'alert-delivery.log');
 const ALERT_WEBHOOK_URL = String(process.env.ALERT_WEBHOOK_URL || '').trim();
+const WECHAT_WORK_WEBHOOK_URL = String(process.env.WECHAT_WORK_WEBHOOK_URL || '').trim();
+const POSITION_MONITOR_INTERVAL_MS = Math.max(15_000, Number(process.env.POSITION_MONITOR_INTERVAL_MS) || 30_000);
 const APP_ENCRYPTION_KEY = crypto.createHash('sha256')
   .update(String(process.env.APP_ENCRYPTION_KEY || 'stocklens-local-development-key'), 'utf8')
   .digest();
@@ -94,6 +97,7 @@ const APP_STATE = {
   users: [],
   alerts: [],
   alertDedupe: {},
+  positions: [],
 };
 
 const MIME = {
@@ -193,6 +197,8 @@ function safeEqual(actual, expected) {
 }
 
 function publicUser(user) {
+  const hasPersonalAiKey = Boolean(user.aiKeyEncrypted);
+  const effectiveKeyLast4 = hasPersonalAiKey ? user.aiKeyLast4 : AI_API_KEY.slice(-4);
   return {
     id: user.id,
     phone: user.phone,
@@ -202,8 +208,9 @@ function publicUser(user) {
       ? ['manage_self', 'manage_ai_settings', 'create_sub_accounts', 'view_sub_accounts']
       : ['manage_self', 'manage_ai_settings'],
     ai: {
-      configured: Boolean(user.aiKeyEncrypted),
-      maskedKey: user.aiKeyLast4 ? `••••••••${user.aiKeyLast4}` : '',
+      configured: Boolean(hasPersonalAiKey || AI_API_KEY),
+      source: hasPersonalAiKey ? 'personal' : AI_API_KEY ? 'server' : 'none',
+      maskedKey: effectiveKeyLast4 ? `••••••••${effectiveKeyLast4}` : '',
       baseUrl: user.aiBaseUrl || AI_BASE_URL,
       model: user.aiModel || AI_MODEL,
       updatedAt: user.aiUpdatedAt || null,
@@ -217,6 +224,7 @@ function appStatePayload() {
     users: APP_STATE.users,
     alerts: APP_STATE.alerts.slice(-500),
     alertDedupe: APP_STATE.alertDedupe,
+    positions: APP_STATE.positions,
   }, null, 2);
 }
 
@@ -245,6 +253,7 @@ function loadAppState() {
     APP_STATE.users = safeArray(stored.users);
     APP_STATE.alerts = safeArray(stored.alerts);
     APP_STATE.alertDedupe = stored.alertDedupe && typeof stored.alertDedupe === 'object' ? stored.alertDedupe : {};
+    APP_STATE.positions = safeArray(stored.positions);
   } catch (error) {
     if (error.code !== 'ENOENT') console.error('[state-load]', error.message);
   }
@@ -309,18 +318,22 @@ function decryptSecret(value) {
 }
 
 function userAiConfig(user) {
+  let apiKey = AI_API_KEY;
+  let source = apiKey ? 'server' : 'none';
   if (user && user.aiKeyEncrypted) {
     try {
-      return {
-        apiKey: decryptSecret(user.aiKeyEncrypted),
-        baseUrl: user.aiBaseUrl || AI_BASE_URL,
-        model: user.aiModel || AI_MODEL,
-      };
+      apiKey = decryptSecret(user.aiKeyEncrypted);
+      source = 'personal';
     } catch (error) {
       console.error('[ai-key-decrypt]', user.id, error.message);
     }
   }
-  return { apiKey: AI_API_KEY, baseUrl: AI_BASE_URL, model: AI_MODEL };
+  return {
+    apiKey,
+    baseUrl: user && user.aiBaseUrl || AI_BASE_URL,
+    model: user && user.aiModel || AI_MODEL,
+    source,
+  };
 }
 
 function canManageAiSettings(actor, targetUserId) {
@@ -2654,20 +2667,28 @@ function computeQuantAlert({ price, composite, confidence, scoreTechnical, score
   const ma20 = validPrice(technical.ma && technical.ma.ma20, invalidation);
   const rsi6 = num(technical.rsi && technical.rsi.rsi6, 50);
   const volumeRatio = num(technical.volumeRatio, 1);
-  const capitalPositive = flow.historyAvailable ? flow.sum5 > 0 : flow.today.main > 0;
-  const capitalNegative = flow.historyAvailable ? flow.sum5 < 0 : flow.today.main < 0;
+  const todayMain = num(flow.today && flow.today.main, 0);
+  const capitalDivergent = flow.historyAvailable && flow.sum5 * todayMain < 0;
+  // A positive multi-day total must not hide a fresh outflow. Right-side buys
+  // require both horizons to agree; either horizon weakening is a risk signal.
+  const capitalPositive = flow.historyAvailable
+    ? flow.sum5 > 0 && todayMain > 0
+    : todayMain > 0;
+  const capitalNegative = flow.historyAvailable
+    ? flow.sum5 < 0 || todayMain < 0
+    : todayMain < 0;
 
   const buyConditions = [
     { label: `综合研判 ≥ 60（当前 ${composite}）`, met: composite >= 60 },
     { label: '技术结构未转空', met: scoreTechnical >= 55 && !technical.maBearish },
     { label: 'MACD 动能偏多', met: technical.macd.hist > 0 || technical.macd.signal === '金叉' },
-    { label: '主力资金净流入', met: capitalPositive },
+    { label: capitalDivergent ? '当日与 5 日资金方向一致' : '主力资金净流入', met: capitalPositive },
   ];
   const sellConditions = [
     { label: `综合研判 < 45（当前 ${composite}）`, met: composite < 45 },
     { label: '价格跌破 MA20 或均线转空', met: price <= ma20 || technical.maBearish },
     { label: 'MACD 动能偏空', met: technical.macd.hist < 0 || technical.macd.signal === '死叉' },
-    { label: '主力资金净流出', met: capitalNegative },
+    { label: capitalDivergent ? '当日与 5 日资金出现背离' : '主力资金净流出', met: capitalNegative },
   ];
   const buyMet = buyConditions.filter((item) => item.met).length;
   const sellMet = sellConditions.filter((item) => item.met).length;
@@ -2683,14 +2704,29 @@ function computeQuantAlert({ price, composite, confidence, scoreTechnical, score
   ), 0);
 
   const pullbackBuffer = Math.max(atr * 0.7, price * 0.012);
-  const buyZoneTop = round(Math.min(support + pullbackBuffer, resistance * 0.985));
-  const profitZoneBottom = round(Math.max(resistance - pullbackBuffer, support * 1.015));
+  const rangeWidth = Math.max(resistance - support, price * 0.016);
+  const rangeMidpoint = (support + resistance) / 2;
+  const zoneSeparation = Math.min(
+    rangeWidth * 0.25,
+    Math.max(price * 0.005, rangeWidth * 0.1),
+  );
+  const buyZoneTop = round(Math.max(
+    support,
+    Math.min(support + pullbackBuffer, rangeMidpoint - zoneSeparation / 2),
+  ));
+  const profitZoneBottom = round(Math.min(
+    resistance,
+    Math.max(resistance - pullbackBuffer, rangeMidpoint + zoneSeparation / 2),
+  ));
   const buyZoneBottom = round(Math.min(support, buyZoneTop));
-  const sellZoneTop = round(Math.max(resistance + atr * 0.35, profitZoneBottom));
-  const riskTrigger = round(Math.max(invalidation, ma20));
-  const pullbackTriggered = price <= buyZoneTop && buyMet >= 3 && composite >= 60;
-  const breakoutTriggered = price >= resistance && buyMet >= 3 && volumeRatio >= 1.2;
-  const riskTriggered = price <= riskTrigger && sellMet >= 3;
+  const sellZoneTop = round(Math.max(resistance, profitZoneBottom));
+  // MA20 is a trend condition, not a stop price. Keep the actionable defense
+  // just below support and never let an overhead average become a downside stop.
+  const riskTrigger = round(Math.max(invalidation, support * 0.995));
+  const longSetupReady = composite >= 60 && buyMet >= 3 && capitalPositive;
+  const pullbackTriggered = price >= buyZoneBottom && price <= buyZoneTop && longSetupReady;
+  const breakoutTriggered = price >= resistance && longSetupReady && volumeRatio >= 1.2;
+  const riskTriggered = price <= riskTrigger;
   const profitTriggered = price >= profitZoneBottom && rsi6 >= 70 && (capitalNegative || technical.macd.hist < 0);
 
   let actionKey = 'watch';
@@ -2706,7 +2742,7 @@ function computeQuantAlert({ price, composite, confidence, scoreTechnical, score
   let conditions = composite >= 50 ? buyConditions : sellConditions;
   let metCount = composite >= 50 ? buyMet : sellMet;
   let signalScore = Math.max(buyStrength, sellStrength);
-  let rule = `价格进入 ${fmtLevel(triggerPrice)} 元附近，且至少 3/4 条件成立`;
+  let rule = `左侧：${fmtLevel(buyZoneBottom)}–${fmtLevel(buyZoneTop)} 元企稳且多头条件成立；右侧：放量站稳 ${fmtLevel(resistance)} 元且资金转正；离场：有效跌破 ${fmtLevel(riskTrigger)} 元`;
 
   if (riskTriggered) {
     actionKey = 'sell';
@@ -2762,17 +2798,19 @@ function computeQuantAlert({ price, composite, confidence, scoreTechnical, score
       ? `现价 ≤ ${fmtLevel(triggerPrice)} 元，且多头条件至少满足 3/4`
       : `现价 ≥ ${fmtLevel(triggerPrice)} 元、量比 ≥ 1.2，且多头条件至少满足 3/4`;
   } else if (composite >= 60) {
-    actionKey = 'buy';
-    actionLabel = '买入';
-    tone = 'up';
+    actionKey = 'watch';
+    actionLabel = '观望';
+    tone = capitalDivergent ? 'warn' : 'neutral';
     title = '等待回踩或放量突破';
-    summary = `多头条件已满足 ${buyMet}/4；回踩 ${fmtLevel(buyZoneTop)} 元以内，或放量突破 ${fmtLevel(resistance)} 元后触发买入提醒。`;
-    triggerLabel = '优先买入价';
+    summary = !capitalPositive
+      ? '技术面有修复迹象，但资金尚未形成共振；低吸区仅作观察，等待资金转正后再确认。'
+      : `多头条件已满足 ${buyMet}/4；回踩低吸区企稳，或放量突破压力位后再确认。`;
+    triggerLabel = '低吸观察上沿';
     triggerPrice = buyZoneTop;
     conditions = buyConditions;
     metCount = buyMet;
     signalScore = buyStrength;
-    rule = `现价 ≤ ${fmtLevel(triggerPrice)} 元，或放量站上 ${fmtLevel(resistance)} 元`;
+    rule = `${longSetupReady ? '左侧：进入' : '左侧仅观察：'} ${fmtLevel(buyZoneBottom)}–${fmtLevel(buyZoneTop)} 元并企稳；右侧：放量站稳 ${fmtLevel(resistance)} 元且资金净流入；离场：有效跌破 ${fmtLevel(riskTrigger)} 元`;
   } else if (composite < 45 || (technical.maBearish && sellMet >= 3)) {
     actionKey = 'sell';
     actionLabel = '卖出';
@@ -2815,18 +2853,42 @@ function computeQuantAlert({ price, composite, confidence, scoreTechnical, score
     totalConditions: conditions.length,
     conditions,
     rule,
+    rules: [
+      {
+        key: 'left',
+        label: '左侧低吸条件',
+        status: longSetupReady ? 'armed' : 'observe',
+        text: longSetupReady
+          ? `价格进入 ${fmtLevel(buyZoneBottom)}–${fmtLevel(buyZoneTop)} 元并企稳，多头条件至少满足 3/4`
+          : `${fmtLevel(buyZoneBottom)}–${fmtLevel(buyZoneTop)} 元仅观察；需综合研判 ≥ 60、多头条件至少满足 3/4 且资金净流入`,
+      },
+      {
+        key: 'right',
+        label: '右侧突破条件',
+        status: breakoutTriggered ? 'triggered' : 'waiting',
+        text: `放量站稳 ${fmtLevel(resistance)} 元、量比 ≥ 1.2，且资金净流入`,
+      },
+      {
+        key: 'exit',
+        label: '强制离场条件',
+        status: riskTriggered ? 'triggered' : 'waiting',
+        text: `有效跌破 ${fmtLevel(riskTrigger)} 元立即防守；空头条件至少满足 3/4 时提前预警`,
+      },
+    ],
     refreshSeconds: 30,
     priceAdvice: {
       buy: {
         lower: buyZoneBottom,
         upper: buyZoneTop,
-        condition: `综合研判不低于 60，且多头条件至少满足 3/4；突破买入还需放量站稳 ${fmtLevel(resistance)} 元`,
+        breakoutPrice: resistance,
+        mode: longSetupReady ? 'conditional' : 'observe',
+        condition: `低吸需综合研判不低于 60、多头条件至少满足 3/4；右侧跟进还需放量站稳 ${fmtLevel(resistance)} 元且资金转正`,
       },
       sell: {
         lower: profitZoneBottom,
         upper: sellZoneTop,
         riskPrice: riskTrigger,
-        condition: `进入压力区后 RSI6 ≥ 70 且资金或 MACD 转弱；若跌至 ${fmtLevel(riskTrigger)} 元以下则按风险卖出处理`,
+        condition: `进入压力区后出现 RSI6 ≥ 70、资金流出或 MACD 转弱时分批减仓；若跌破 ${fmtLevel(riskTrigger)} 元则优先防守`,
       },
       basis: `支撑 ${fmtLevel(support)} 元、压力 ${fmtLevel(resistance)} 元、ATR14 ${fmtLevel(atr)} 元、MA20 ${fmtLevel(ma20)} 元及量价/资金因子`,
       updatedAt: new Date().toISOString(),
@@ -3065,8 +3127,31 @@ function computeForecast({ quote, technical, flow, markets, composite, levels })
   };
 }
 
+function analyzeResistanceAttempts(intraday, resistance, price, volumeRatio, capitalPositive) {
+  const rows = safeArray(intraday && intraday.rows).filter((row) => Number(row.price) > 0);
+  const nearLine = resistance * 0.997;
+  let attempts = 0;
+  let inside = false;
+  rows.forEach((row) => {
+    const near = Number(row.price) >= nearLine;
+    if (near && !inside) attempts += 1;
+    inside = near;
+  });
+  const recent = rows.slice(-3);
+  const stayedAbove = recent.length >= 3 && recent.every((row) => Number(row.price) >= resistance * 0.999);
+  const breakoutConfirmed = price >= resistance
+    && volumeRatio >= 1.2
+    && capitalPositive
+    && (stayedAbove || rows.length === 0 && price >= resistance * 1.002);
+  return {
+    attempts,
+    breakoutConfirmed,
+    failedBreakout: attempts >= 2 && !breakoutConfirmed && price < resistance,
+  };
+}
+
 function computePositionAdvice(payload, position) {
-  const { quote, technical, ai, news } = payload;
+  const { quote, technical, ai, news, flow, intraday } = payload;
   const forecast = ai.forecast;
   const price = quote.price;
   const cost = Number(position.cost);
@@ -3091,43 +3176,98 @@ function computePositionAdvice(payload, position) {
   const stop = ai.levels.invalidation;
   const support = ai.levels.support;
   const resistance = ai.levels.resistance;
+  const atr = Math.max(num(technical.atr14, price * 0.02), price * 0.005);
+  const rsi6 = num(technical.rsi && technical.rsi.rsi6, 50);
+  const volumeRatio = num(technical.volumeRatio, 1);
+  const todayMain = num(flow && flow.today && flow.today.main, 0);
+  const capitalPositive = flow && flow.historyAvailable ? num(flow.sum5) > 0 && todayMain > 0 : todayMain > 0;
+  const capitalNegative = flow && flow.historyAvailable ? num(flow.sum5) < 0 || todayMain < 0 : todayMain < 0;
+  const macdHist = num(technical.macd && technical.macd.hist, 0);
+  const macdPrevHist = num(technical.macd && technical.macd.prevHist, macdHist);
+  const macdWeakening = macdHist < 0 || macdHist < macdPrevHist;
+  const pressureLower = num(
+    ai.quantAlert && ai.quantAlert.priceAdvice && ai.quantAlert.priceAdvice.sell && ai.quantAlert.priceAdvice.sell.lower,
+    resistance - Math.max(atr * 0.7, price * 0.012),
+  );
+  const inPressureZone = price >= pressureLower && price <= resistance * 1.005;
+  const resistanceTest = analyzeResistanceAttempts(intraday, resistance, price, volumeRatio, capitalPositive);
+  const momentumWeak = capitalNegative || macdWeakening;
+  const pressureTakeProfit = pnlPct > 0
+    && inPressureZone
+    && rsi6 >= 70
+    && momentumWeak
+    && resistanceTest.failedBreakout;
   const protectProfit = pnlPct >= 8 && cost * 1.01 < price;
-  const defense = round(protectProfit ? Math.max(stop, cost * 1.01) : stop);
-  const riskPerShare = Math.max(0, price - defense);
-  const riskAmount = riskPerShare * shares;
-  const riskPct = capital ? round((riskAmount / capital) * 100) : null;
-  const riskReward = riskPerShare > 0 ? round((resistance - price) / riskPerShare) : null;
+  const baseDefense = round(protectProfit ? Math.max(stop, cost * 1.01) : stop);
+  const baseRiskPerShare = Math.max(0, price - baseDefense);
+  const riskReward = baseRiskPerShare > 0 ? round(Math.max(0, resistance - price) / baseRiskPerShare) : null;
+  const poorRiskReward = pnlPct > 0
+    && inPressureZone
+    && momentumWeak
+    && riskReward != null
+    && riskReward < 0.8;
 
   let action = '持有观察';
   let tone = 'neutral';
+  let decisionKey = 'hold';
+  let reduceRatio = null;
   if (price <= stop && compositeScore < 52) {
     action = '止损/减仓';
     tone = 'down';
+    decisionKey = 'risk-stop';
+    reduceRatio = 0.5;
+  } else if (resistanceTest.breakoutConfirmed) {
+    action = '放量突破 · 继续持有';
+    tone = 'up';
+    decisionKey = 'breakout-hold';
+  } else if (pressureTakeProfit) {
+    action = '压力区 · 分批止盈';
+    tone = 'warn';
+    decisionKey = 'pressure-take-profit';
+    reduceRatio = capitalNegative && macdWeakening ? 0.5 : 0.3;
+  } else if (poorRiskReward) {
+    action = '盈亏比收缩 · 减仓';
+    tone = 'warn';
+    decisionKey = 'risk-reward-reduce';
+    reduceRatio = 0.3;
   } else if (sentimentScore < 42 && compositeScore < 50) {
     action = '舆情转弱 · 减仓';
     tone = 'down';
-  } else if (pnlPct >= 18 && (technical.rsi.rsi6 >= 70 || ai.levels.resistanceGap <= 2.5)) {
-    action = '分批止盈';
-    tone = 'warn';
+    decisionKey = 'sentiment-reduce';
+    reduceRatio = 0.3;
   } else if (weight != null && weight > targetPct + 15) {
     action = '仓位偏重 · 减仓';
     tone = 'warn';
+    decisionKey = 'overweight-reduce';
   } else if (weight != null && weight < targetPct - 15 && compositeScore >= 58 && sentimentScore >= 48 && riskReward != null && riskReward >= 1.25) {
     action = '仓位偏低 · 加仓';
     tone = 'up';
+    decisionKey = 'add';
   } else if (compositeScore >= 60 && sentimentScore >= 48 && pnlPct >= 0) {
     action = '继续持有';
     tone = 'up';
+    decisionKey = 'trend-hold';
   } else if (compositeScore < 42 || sentimentScore < 35) {
     action = '减仓 / 防守';
     tone = 'down';
+    decisionKey = 'weak-reduce';
+    reduceRatio = 0.3;
   }
 
+  const defense = round(resistanceTest.breakoutConfirmed
+    ? Math.max(baseDefense, support, resistance - Math.max(atr * 0.25, price * 0.005))
+    : pressureTakeProfit
+      ? Math.max(baseDefense, support, cost * 1.003)
+      : baseDefense);
+  const riskPerShare = Math.max(0, price - defense);
+  const riskAmount = riskPerShare * shares;
+  const riskPct = capital ? round((riskAmount / capital) * 100) : null;
+
   let suggestedShares = null;
-  if (action === '止损/减仓') {
-    suggestedShares = Math.max(100, Math.round(shares * 0.5 / 100) * 100);
+  if (reduceRatio != null) {
+    suggestedShares = Math.max(100, Math.round(shares * reduceRatio / 100) * 100);
     if (suggestedShares > shares) suggestedShares = shares;
-  } else if (action === '分批止盈' || action.includes('减仓')) {
+  } else if (action.includes('减仓')) {
     if (weight != null && weight > targetPct) {
       const excessValue = marketValue - capital * targetPct / 100;
       suggestedShares = Math.ceil(excessValue / price / 100) * 100;
@@ -3149,33 +3289,53 @@ function computePositionAdvice(payload, position) {
   let advice;
   let plan;
   if (action === '止损/减仓') {
-    advice = `AI 建议${action}：实时价 ${fmtLevel(price)} 已触及风险位 ${fmtLevel(stop)}，综合研判 ${compositeScore.toFixed(0)} 分、舆情 ${sentimentScore.toFixed(0)} 分均不支持继续承受当前风险。先减仓 ${suggestedShares} 股，剩余仓位以 ${fmtLevel(defense)} 为最后防线。`;
+    advice = `量化建议${action}：实时价 ${fmtLevel(price)} 已触及风险位 ${fmtLevel(stop)}，综合研判 ${compositeScore.toFixed(0)} 分、舆情 ${sentimentScore.toFixed(0)} 分均不支持继续承受当前风险。先减仓 ${suggestedShares} 股，剩余仓位以 ${fmtLevel(defense)} 为最后防线。`;
+    plan = `减仓 ${suggestedShares} 股，剩余 ${Math.max(0, shares - suggestedShares)} 股`;
+  } else if (action === '放量突破 · 继续持有') {
+    advice = `量化建议继续持有：现价已放量站稳 ${fmtLevel(resistance)} 元，量比 ${volumeRatio.toFixed(2)}，主力资金保持净流入，压力位已获得突破确认。取消本轮止盈，防守位上移至 ${fmtLevel(defense)} 元。`;
+    plan = `继续持有 ${shares} 股，防守位上移至 ${fmtLevel(defense)} 元`;
+  } else if (action === '压力区 · 分批止盈') {
+    const weakReason = [capitalNegative ? '主力资金转弱' : '', macdWeakening ? 'MACD 动能下降' : ''].filter(Boolean).join('、');
+    advice = `量化建议分批止盈：现价进入 ${fmtLevel(pressureLower)}～${fmtLevel(resistance)} 元压力区，RSI6 为 ${round(rsi6, 0)}，${weakReason || '动能转弱'}，且日内 ${resistanceTest.attempts} 次冲击压力位未站稳。先卖出 ${suggestedShares} 股（约 ${Math.round(reduceRatio * 100)}%）锁定利润；若后续放量站稳 ${fmtLevel(resistance)} 元则取消止盈，剩余仓位防守位上移至 ${fmtLevel(defense)} 元。`;
+    plan = `止盈 ${suggestedShares} 股，剩余 ${Math.max(0, shares - suggestedShares)} 股`;
+  } else if (action === '盈亏比收缩 · 减仓') {
+    advice = `量化建议降低仓位：股价已进入压力区，剩余上行空间与防守风险之比约 ${riskReward}:1，且资金或 MACD 动能转弱。建议先卖出 ${suggestedShares} 股，等待放量突破 ${fmtLevel(resistance)} 元后再取消防守。`;
     plan = `减仓 ${suggestedShares} 股，剩余 ${Math.max(0, shares - suggestedShares)} 股`;
   } else if (action === '舆情转弱 · 减仓') {
-    advice = `AI 建议主动收缩：消息面已降至 ${sentimentScore.toFixed(0)} 分，综合研判仅 ${compositeScore.toFixed(0)} 分。即使实时价尚未触及止损位，也建议先减仓 ${suggestedShares} 股，避免舆情继续发酵放大回撤。`;
+    advice = `量化建议主动收缩：消息面已降至 ${sentimentScore.toFixed(0)} 分，综合研判仅 ${compositeScore.toFixed(0)} 分。即使实时价尚未触及止损位，也建议先减仓 ${suggestedShares} 股，避免舆情继续发酵放大回撤。`;
     plan = `减仓 ${suggestedShares} 股，观察舆情能否重回 45 分以上`;
-  } else if (action === '分批止盈') {
-    advice = `AI 建议分批止盈：浮盈已达到 ${fmtPct(pnlPct)}，且接近压力位 ${fmtLevel(resistance)}。建议先减仓 ${suggestedShares} 股，保留底仓观察突破。`;
-    plan = `止盈 ${suggestedShares} 股，剩余 ${Math.max(0, shares - suggestedShares)} 股`;
   } else if (action.includes('减仓')) {
-    advice = `AI 建议降低仓位：当前${weight != null ? `仓位 ${weight.toFixed(1)}% 高于模型参考的 ${targetPct}%` : `持仓风险偏高`}。建议减仓 ${suggestedShares} 股，把仓位降至模型舒适区。`;
+    advice = `量化建议降低仓位：当前${weight != null ? `仓位 ${weight.toFixed(1)}% 高于模型参考的 ${targetPct}%` : `持仓风险偏高`}。建议减仓 ${suggestedShares} 股，把仓位降至模型舒适区。`;
     plan = `减仓 ${suggestedShares} 股，剩余 ${Math.max(0, shares - suggestedShares)} 股`;
   } else if (action.includes('加仓')) {
-    advice = `AI 建议小幅加仓：当前仓位低于模型参考的 ${targetPct}%，综合研判 ${compositeScore.toFixed(0)} 分、舆情 ${sentimentScore.toFixed(0)} 分形成正向共振；但只在回踩 ${fmtLevel(support)} 附近或放量站稳 ${fmtLevel(resistance)} 后执行，建议加 ${suggestedShares} 股。`;
+    advice = `量化建议小幅加仓：当前仓位低于模型参考的 ${targetPct}%，综合研判 ${compositeScore.toFixed(0)} 分、舆情 ${sentimentScore.toFixed(0)} 分形成正向共振；但只在回踩 ${fmtLevel(support)} 附近或放量站稳 ${fmtLevel(resistance)} 后执行，建议加 ${suggestedShares} 股。`;
     plan = `加仓 ${suggestedShares} 股，目标仓位约 ${targetPct}%`;
   } else if (action === '继续持有') {
     advice = riskReward != null && riskReward < 1.2
-      ? `AI 建议继续持有但不加仓：趋势与资金面偏正面，但当前盈亏比仅 ${riskReward}:1，追高性价比不足。防守位 ${fmtLevel(defense)}，等待回踩 ${fmtLevel(support)} 再评估。`
-      : `AI 建议继续持有：实时价 ${fmtLevel(price)} 下，综合研判 ${compositeScore.toFixed(0)} 分、舆情 ${sentimentScore.toFixed(0)} 分仍偏正面，防守位上移至 ${fmtLevel(defense)}；若放量站稳 ${fmtLevel(resistance)} 可保持，若跌破防守位再减仓。`;
+      ? `量化建议继续持有但不加仓：趋势与资金面偏正面，但当前盈亏比仅 ${riskReward}:1，追高性价比不足。防守位 ${fmtLevel(defense)}，等待回踩 ${fmtLevel(support)} 再评估。`
+      : `量化建议继续持有：实时价 ${fmtLevel(price)} 下，综合研判 ${compositeScore.toFixed(0)} 分、舆情 ${sentimentScore.toFixed(0)} 分仍偏正面，防守位上移至 ${fmtLevel(defense)}；若放量站稳 ${fmtLevel(resistance)} 可保持，若跌破防守位再减仓。`;
     plan = `持有 ${shares} 股，防守 ${fmtLevel(defense)}`;
   } else {
-    advice = `AI 建议持有观察：实时价、舆情 ${sentimentScore.toFixed(0)} 分与综合研判 ${compositeScore.toFixed(0)} 分尚未形成一致信号，暂不加仓；以 ${fmtLevel(support)} 为观察支撑、${fmtLevel(resistance)} 为第一压力，跌破 ${fmtLevel(defense)} 再防守。`;
+    advice = `量化建议持有观察：实时价、舆情 ${sentimentScore.toFixed(0)} 分与综合研判 ${compositeScore.toFixed(0)} 分尚未形成一致信号，暂不加仓；以 ${fmtLevel(support)} 为观察支撑、${fmtLevel(resistance)} 为第一压力，跌破 ${fmtLevel(defense)} 再防守。`;
     plan = `持有 ${shares} 股，等待方向确认`;
   }
 
   const positionRisk = riskPct != null
     ? `当前持仓到防守位的风险约 ${fmtYi(riskAmount)}，占总资金 ${riskPct}%。`
     : `当前持仓到防守位的风险约 ${fmtYi(riskAmount)}。`;
+  const actionableSell = decisionKey.endsWith('reduce')
+    || decisionKey === 'risk-stop'
+    || decisionKey === 'pressure-take-profit';
+  const monitorAlert = {
+    scope: 'position',
+    actionKey: actionableSell ? 'sell' : 'watch',
+    status: actionableSell ? 'triggered' : 'watching',
+    title: action,
+    summary: advice,
+    triggerPrice: decisionKey === 'risk-stop' ? stop : pressureLower,
+    currentPrice: price,
+    dedupeKey: `${decisionKey}:${round(decisionKey === 'risk-stop' ? stop : resistance)}`,
+  };
 
   return {
     action,
@@ -3184,6 +3344,19 @@ function computePositionAdvice(payload, position) {
     summary,
     advice,
     plan,
+    decision: {
+      key: decisionKey,
+      reduceRatio: reduceRatio == null ? null : round(reduceRatio * 100, 0),
+      pressureZone: { lower: round(pressureLower), upper: round(resistance) },
+      inPressureZone,
+      rsiHigh: rsi6 >= 70,
+      capitalNegative,
+      macdWeakening,
+      resistanceAttempts: resistanceTest.attempts,
+      failedBreakout: resistanceTest.failedBreakout,
+      breakoutConfirmed: resistanceTest.breakoutConfirmed,
+    },
+    monitorAlert,
     stats: {
       cost: round(cost),
       shares,
@@ -3212,7 +3385,7 @@ function computePositionAdvice(payload, position) {
       latestAmount: round(latestAmount, 0),
     },
     riskNote: `${positionRisk}${riskReward != null ? ` 当前盈亏比约 ${riskReward}:1。` : ''}${latestSide ? ` 最近一笔为${latestSide === 'buy' ? '买入' : '卖出'} ${fmtYi(latestAmount)}，已纳入交易节奏判断。` : ''}`,
-    modelNote: 'AI 持仓建议由本地量化模型结合交易流水、实时股价、舆情、综合研判、仓位与支撑压力生成，仅作信息参考。',
+    modelNote: '买卖动作由可回测的本地量化规则生成；大模型仅用于解释规则命中原因，不参与决定触发价或买卖动作。仅作信息参考。',
   };
 }
 
@@ -3222,6 +3395,10 @@ function computePositionAdvice(payload, position) {
 
 function computeAi({ quote, technical, flow, reports, markets, rows, news }) {
   const price = quote.price;
+  const techUp = technical.signals.filter((signal) => signal.tone === 'up').length;
+  const techDown = technical.signals.filter((signal) => signal.tone === 'down').length;
+  const techWarn = technical.signals.filter((signal) => signal.tone === 'warn').length;
+  const capitalDivergent = flow.historyAvailable && flow.sum5 * flow.today.main < 0;
   const scoreTrend = (() => {
     let s = 50;
     if (technical.ma.ma20) s += price > technical.ma.ma20 ? 12 : -12;
@@ -3416,25 +3593,35 @@ function computeAi({ quote, technical, flow, reports, markets, rows, news }) {
   const summary =
     `${quote.name} 当前综合研判分 ${composite}/100，模型观点为「${stance}」。` +
     `${trendSummaryText}，` +
-    `${flow.sum5 >= 0 ? '资金面偏积极' : '资金面偏谨慎'}，` +
+    `${capitalDivergent ? '当日与 5 日资金方向背离' : flow.sum5 >= 0 ? '资金面偏积极' : '资金面偏谨慎'}，` +
     `${reports.count ? `机构共识${reports.positiveRatio >= 65 ? '偏正面' : reports.positiveRatio >= 45 ? '中性' : '偏谨慎'}，` : '机构信号有限，'}` +
     `消息面${news && news.sentiment ? news.sentiment : '中性'}。` +
     `短线关注 ${fmtLevel(support)} 支撑与 ${fmtLevel(resistance)} 压力，等待量价确认。`;
 
-  const aiAdvice = stanceKey === 'bull' || stanceKey === 'lean-bull'
-    ? `不追高，等待回踩 ${fmtLevel(support)} 附近企稳；若放量站稳 ${fmtLevel(resistance)}，可视为趋势转强确认。`
+  const technicalLeansPositive = technical.maAligned
+    || (!technical.maBearish && techUp > techDown + techWarn)
+    || scoreTechnical >= 60;
+  const technicalRepairing = technical.macd.hist > 0 || technical.macd.signal === '金叉';
+  const capitalUnderPressure = capitalDivergent || flow.sum5 < 0 || flow.today.main < 0 || scoreCapital < 45;
+  const technicalCapitalConflict = (technicalLeansPositive || technicalRepairing) && capitalUnderPressure;
+  const capitalConflictText = capitalDivergent
+    ? `今日主力${flow.today.main >= 0 ? '净流入' : '净流出'} ${fmtYi(Math.abs(flow.today.main))}、5 日累计${flow.sum5 >= 0 ? '净流入' : '净流出'} ${fmtYi(Math.abs(flow.sum5))}`
+    : `当日主力净流出 ${fmtYi(Math.abs(flow.today.main))}`;
+  const aiAdvice = technicalCapitalConflict
+    ? `技术面有修复迹象（MACD ${technical.macd.signal}），但${capitalConflictText}，资金面与技术面未形成共振，反弹高度或持续性受限。当前控制仓位；回踩 ${fmtLevel(support)} 附近仅观察承接，放量站稳 ${fmtLevel(resistance)} 且资金转正后再考虑右侧跟进。`
+    : stanceKey === 'bull' || stanceKey === 'lean-bull'
+      ? `不追高，等待回踩 ${fmtLevel(support)} 附近企稳；若放量站稳 ${fmtLevel(resistance)} 且资金净流入，可视为趋势转强确认。`
     : stanceKey === 'bear' || stanceKey === 'lean-bear'
       ? `反弹至 ${fmtLevel(resistance)} 附近留意压力；若有效跌破 ${fmtLevel(invalidation)} 且成交放大，应优先控制回撤。`
       : `维持观望，等待 ${fmtLevel(support)}–${fmtLevel(resistance)} 区间选择方向；突破或跌破后再顺势应对。`;
-  const adviceTitle = stanceKey === 'bull' || stanceKey === 'lean-bull'
-    ? '等待回踩或突破确认'
+  const adviceTitle = technicalCapitalConflict
+    ? '技术修复但资金未共振，暂观望'
+    : stanceKey === 'bull' || stanceKey === 'lean-bull'
+      ? '等待回踩或突破确认'
     : stanceKey === 'bear' || stanceKey === 'lean-bear'
       ? '反弹留意压力，跌破优先防守'
       : '区间内观望，等待方向选择';
 
-  const techUp = technical.signals.filter((s) => s.tone === 'up').length;
-  const techDown = technical.signals.filter((s) => s.tone === 'down').length;
-  const techWarn = technical.signals.filter((s) => s.tone === 'warn').length;
   let techVerdict = '中性';
   let techTone = 'neutral';
   if (technical.maAligned && techUp >= 3) {
@@ -3476,10 +3663,17 @@ function computeAi({ quote, technical, flow, reports, markets, rows, news }) {
     capitalTitle = `今日主力${flow.today.main >= 0 ? '净流入' : '净流出'} ${fmtYi(Math.abs(flow.today.main))}`;
     capitalConclusionText = `超大单 ${signedYi(flow.today.superLarge)}，大单 ${signedYi(flow.today.large)}；多日资金序列暂缺，暂以单日结构判断。`;
   } else {
-    capitalTitle = `近 5 日主力${flow.sum5 >= 0 ? '净流入' : '净流出'} ${fmtYi(Math.abs(flow.sum5))}`;
+    const capitalDivergent = flow.sum5 * flow.today.main < 0;
+    if (capitalDivergent) {
+      capitalVerdict = '资金背离';
+      capitalTone = 'warn';
+    }
+    capitalTitle = capitalDivergent
+      ? `今日主力${flow.today.main >= 0 ? '净流入' : '净流出'} ${fmtYi(Math.abs(flow.today.main))}，5 日累计${flow.sum5 >= 0 ? '净流入' : '净流出'} ${fmtYi(Math.abs(flow.sum5))}`
+      : `近 5 日主力${flow.sum5 >= 0 ? '净流入' : '净流出'} ${fmtYi(Math.abs(flow.sum5))}`;
     capitalConclusionText =
       `今日主力${flow.today.main >= 0 ? '净流入' : '净流出'} ${fmtYi(Math.abs(flow.today.main))}，` +
-      `超大单 ${signedYi(flow.today.superLarge)}；5 日净额占成交额 ${Math.abs(flow.ratio5 ?? 0)}%，资金面${flow.sum5 >= 0 ? '偏积极' : '承压'}。`;
+      `超大单 ${signedYi(flow.today.superLarge)}；5 日净额占成交额 ${Math.abs(flow.ratio5 ?? 0)}%，资金面${capitalDivergent ? '长短周期方向不一致，需等待共振' : flow.sum5 >= 0 ? '偏积极' : '承压'}。`;
   }
 
   return {
@@ -3553,6 +3747,30 @@ function computeAi({ quote, technical, flow, reports, markets, rows, news }) {
     risks,
     disclaimer: '本研判由本地多因子模型自动生成，仅用于信息参考，不构成任何投资建议。市场有风险，决策需独立判断。',
   };
+}
+
+function refreshSnapshotAnalysis(snapshot) {
+  if (!snapshot || !snapshot.quote || !snapshot.technical || !snapshot.flow
+    || !snapshot.reports || !snapshot.markets || !snapshot.kline) return snapshot;
+  const rows = safeArray(snapshot.kline.rows);
+  if (!rows.length) return snapshot;
+  try {
+    return {
+      ...snapshot,
+      ai: computeAi({
+        quote: snapshot.quote,
+        technical: snapshot.technical,
+        flow: snapshot.flow,
+        reports: snapshot.reports,
+        markets: snapshot.markets,
+        rows,
+        news: snapshot.news || { score: 50, count: 0, items: [] },
+      }),
+    };
+  } catch (error) {
+    console.warn('[snapshot] unable to refresh analysis', error.message);
+    return snapshot;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -3770,6 +3988,57 @@ function aiEndpoint(baseUrl = AI_BASE_URL) {
   return `${normalized}/chat/completions`;
 }
 
+function aiErrorMessage(error) {
+  if (error && (error.name === 'AbortError' || error.name === 'TimeoutError')) return '连接模型接口超时';
+  const message = String(error && error.message || '模型接口请求失败').trim();
+  return message === 'fetch failed' ? '无法连接模型接口，请检查 API 地址和服务器网络' : message.slice(0, 500);
+}
+
+async function requestAiCompletion(aiConfig, messages, options = {}) {
+  const fetchImpl = options.fetchImpl || fetch;
+  const timeoutMs = Math.max(1_000, Number(options.timeoutMs) || 45_000);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetchImpl(aiEndpoint(aiConfig.baseUrl), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${aiConfig.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: aiConfig.model,
+        messages,
+        temperature: 0.2,
+      }),
+      signal: controller.signal,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const detail = payload && payload.error;
+      throw new Error(String(detail && (detail.message || detail.code) || `模型接口返回 ${response.status}`).slice(0, 500));
+    }
+    const content = payload && payload.choices && payload.choices[0]
+      && payload.choices[0].message && payload.choices[0].message.content;
+    if (!String(content || '').trim()) throw new Error('模型接口未返回有效内容');
+    return String(content);
+  } catch (error) {
+    throw new Error(aiErrorMessage(error));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function verifyAiConfig(aiConfig, options = {}) {
+  if (!aiConfig || !aiConfig.apiKey) throw new Error('请输入 API Key');
+  if (!/^https:\/\//i.test(String(aiConfig.baseUrl || ''))) throw new Error('API 地址必须使用 HTTPS');
+  if (!String(aiConfig.model || '').trim()) throw new Error('请输入模型名称');
+  await requestAiCompletion(aiConfig, [
+    { role: 'user', content: '请只回复“连接成功”四个字。' },
+  ], { ...options, timeoutMs: options.timeoutMs || 20_000 });
+  return { ok: true };
+}
+
 function parseAiJson(content) {
   const text = String(content || '').trim();
   if (!text) return null;
@@ -3956,33 +4225,12 @@ async function cloudCopilotAnswer(question, messages, context, aiConfig) {
     role: item.role === 'assistant' ? 'assistant' : 'user',
     content: String(item.content || '').slice(0, 3000),
   }));
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 45_000);
-  try {
-    const response = await fetch(aiEndpoint(aiConfig.baseUrl), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${aiConfig.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: aiConfig.model,
-        messages: [
-          { role: 'system', content: system },
-          ...compactMessages.slice(0, -1),
-          { role: 'user', content: `问题：${String(question).slice(0, 1000)}\n\n当前页面上下文：\n${JSON.stringify(context)}` },
-        ],
-        temperature: 0.2,
-      }),
-      signal: controller.signal,
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.error && payload.error.message || `模型接口返回 ${response.status}`);
-    const content = payload.choices && payload.choices[0] && payload.choices[0].message && payload.choices[0].message.content;
-    return normalizeCopilotResult(parseAiJson(content), context, 'cloud');
-  } finally {
-    clearTimeout(timer);
-  }
+  const content = await requestAiCompletion(aiConfig, [
+    { role: 'system', content: system },
+    ...compactMessages.slice(0, -1),
+    { role: 'user', content: `问题：${String(question).slice(0, 1000)}\n\n当前页面上下文：\n${JSON.stringify(context)}` },
+  ]);
+  return normalizeCopilotResult(parseAiJson(content), context, 'cloud');
 }
 
 async function handleAiChat(req, res, user) {
@@ -3994,13 +4242,19 @@ async function handleAiChat(req, res, user) {
     if (!question) return json(res, 400, { error: '请输入问题' });
     if (!context || !context.stock) return json(res, 400, { error: '缺少当前页面上下文' });
     const aiConfig = userAiConfig(user);
-    if (!aiConfig.apiKey) return json(res, 200, localCopilotAnswer(question, context));
+    if (!aiConfig.apiKey) {
+      const local = localCopilotAnswer(question, context);
+      local.configured = false;
+      return json(res, 200, local);
+    }
     try {
       return json(res, 200, await cloudCopilotAnswer(question, body.messages, context, aiConfig));
     } catch (error) {
       console.error('[ai-chat]', error.message);
       const fallback = localCopilotAnswer(question, context);
-      fallback.answer += '\n\n云端模型暂时不可用，本次已自动切换为本地页面分析。';
+      fallback.cloudError = aiErrorMessage(error);
+      fallback.configured = true;
+      fallback.answer += `\n\n云端模型调用失败（${fallback.cloudError}），本次已自动切换为本地页面分析。`;
       return json(res, 200, fallback);
     }
   } catch (error) {
@@ -4108,6 +4362,89 @@ async function handleWatchlist(url, res) {
   return json(res, 200, { items });
 }
 
+async function handleWatchlistEvents(url, res) {
+  const codes = Array.from(new Set(String(url.searchParams.get('codes') || '')
+    .split(',')
+    .map(normalizeCode)
+    .filter(Boolean)))
+    .slice(0, 12);
+  if (!codes.length) return json(res, 200, { items: [], checkedAt: new Date().toISOString() });
+
+  const [newsFeed, announcementEntries] = await Promise.all([
+    optionalWithin(
+      cached('watch-events:news', 60_000, () => loadNewsFeed({
+        apiUrl: NEWS_API_URL,
+        apiKey: NEWS_API_KEY,
+        provider: NEWS_PROVIDER,
+      })).catch(() => []),
+      8_000,
+      [],
+    ),
+    Promise.all(codes.map(async (code) => {
+      const announcements = await optionalWithin(
+        cached(`watch-events:ann:${code}`, 5 * 60_000, () => fetchAnnouncements(code)).catch(() => ({ list: [] })),
+        6_500,
+        { list: [] },
+      );
+      return [code, announcements];
+    })),
+  ]);
+  const items = buildWatchlistEvents({
+    codes,
+    newsFeed,
+    announcementsByCode: Object.fromEntries(announcementEntries),
+  }).slice(0, 20);
+  return json(res, 200, { items, checkedAt: new Date().toISOString() });
+}
+
+function sanitizeSyncedPosition(value) {
+  const cost = Number(value && value.cost);
+  const shares = Math.max(0, Math.round(Number(value && value.shares)));
+  if (!Number.isFinite(cost) || cost <= 0 || shares <= 0) return null;
+  const capital = Number(value.capital);
+  const totalBuy = Number(value.totalBuy);
+  const totalSell = Number(value.totalSell);
+  const latestAmount = Number(value.latestAmount);
+  return {
+    cost: round(cost, 4),
+    shares,
+    capital: Number.isFinite(capital) && capital > 0 ? round(capital, 2) : null,
+    totalBuy: Number.isFinite(totalBuy) && totalBuy >= 0 ? round(totalBuy, 2) : round(cost * shares, 2),
+    totalSell: Number.isFinite(totalSell) && totalSell >= 0 ? round(totalSell, 2) : 0,
+    latestSide: value.latestSide === 'buy' || value.latestSide === 'sell' ? value.latestSide : null,
+    latestAmount: Number.isFinite(latestAmount) && latestAmount >= 0 ? round(latestAmount, 2) : 0,
+  };
+}
+
+async function handlePositions(req, res, user, url) {
+  if (req.method === 'GET') {
+    const items = APP_STATE.positions.filter((item) => item.userId === user.id);
+    return json(res, 200, { items });
+  }
+  const code = normalizeCode(url.searchParams.get('code'));
+  if (req.method === 'DELETE') {
+    if (!code) return json(res, 400, { error: '请输入 6 位股票代码' });
+    APP_STATE.positions = APP_STATE.positions.filter((item) => !(item.userId === user.id && item.code === code));
+    await persistAppState();
+    return json(res, 200, { ok: true });
+  }
+  if (req.method === 'PUT') {
+    const body = await readJsonBody(req, 32 * 1024);
+    const bodyCode = normalizeCode(body.code);
+    const position = sanitizeSyncedPosition(body.position);
+    if (!bodyCode) return json(res, 400, { error: '请输入 6 位股票代码' });
+    if (!position) return json(res, 400, { error: '持仓成本与股数必须大于 0' });
+    const updatedAt = new Date().toISOString();
+    const next = { userId: user.id, code: bodyCode, ...position, updatedAt };
+    const index = APP_STATE.positions.findIndex((item) => item.userId === user.id && item.code === bodyCode);
+    if (index >= 0) APP_STATE.positions[index] = next;
+    else APP_STATE.positions.push(next);
+    await persistAppState();
+    return json(res, 200, { position: next });
+  }
+  return json(res, 405, { error: '请求方法不支持' });
+}
+
 async function handlePositionAdvice(url, res) {
   const code = normalizeCode(url.searchParams.get('code'));
   const cost = Number(url.searchParams.get('cost'));
@@ -4163,9 +4500,10 @@ async function handleStock(url, res, user) {
     console.error('[stock]', code, error.message);
     const snapshot = await readSnapshot(code);
     if (snapshot) {
-      snapshot.stale = true;
-      snapshot.staleReason = '上游数据源暂时不可用，展示最近一次成功快照';
-      return json(res, 200, snapshot);
+      const refreshedSnapshot = refreshSnapshotAnalysis(snapshot);
+      refreshedSnapshot.stale = true;
+      refreshedSnapshot.staleReason = '上游数据源暂时不可用，展示最近一次成功快照';
+      return json(res, 200, refreshedSnapshot);
     }
     return json(res, 502, { error: `暂时无法获取 ${code} 的行情数据，请稍后重试` });
   }
@@ -4281,9 +4619,61 @@ async function deliverAlertWebhook(alert, webhookUrl = ALERT_WEBHOOK_URL, option
   await persistImpl();
 }
 
-async function recordTriggeredAlert({ user, code, name, alert, webhookUrl = ALERT_WEBHOOK_URL }) {
+async function deliverWechatWorkAlert(alert, webhookUrl = WECHAT_WORK_WEBHOOK_URL, options = {}) {
+  const fetchImpl = options.fetchImpl || fetch;
+  const logImpl = options.logImpl || appendAlertLog;
+  const persistImpl = options.persistImpl || persistAppState;
+  const sleepImpl = options.sleepImpl || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  if (!webhookUrl) {
+    alert.channels.wechatWork = { status: 'not_configured', attempts: 0 };
+    await logImpl({ alertId: alert.id, channel: 'wechat_work', status: 'not_configured' });
+    await persistImpl();
+    return;
+  }
+  let lastError = '';
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const response = await fetchImpl(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          msgtype: 'text',
+          text: {
+            content: `${alert.title}\n${alert.stock.name}（${alert.stock.code}）\n${alert.message}\n触发价：${fmtLevel(alert.triggerPrice)} 元`,
+          },
+        }),
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const result = await response.json().catch(() => ({}));
+      if (Number(result.errcode || 0) !== 0) throw new Error(result.errmsg || `企业微信错误 ${result.errcode}`);
+      alert.channels.wechatWork = { status: 'delivered', attempts: attempt, deliveredAt: new Date().toISOString() };
+      await logImpl({ alertId: alert.id, channel: 'wechat_work', status: 'delivered', attempt });
+      await persistImpl();
+      return;
+    } catch (error) {
+      lastError = error.message;
+      await logImpl({ alertId: alert.id, channel: 'wechat_work', status: 'retry', attempt, error: lastError });
+      if (attempt < 3) await sleepImpl(250 * (2 ** (attempt - 1)));
+    }
+  }
+  alert.channels.wechatWork = { status: 'failed', attempts: 3, error: lastError, failedAt: new Date().toISOString() };
+  await logImpl({ alertId: alert.id, channel: 'wechat_work', status: 'failed', attempts: 3, error: lastError });
+  await persistImpl();
+}
+
+async function recordTriggeredAlert({
+  user,
+  code,
+  name,
+  alert,
+  webhookUrl = ALERT_WEBHOOK_URL,
+  wechatWorkWebhookUrl = WECHAT_WORK_WEBHOOK_URL,
+}) {
   if (!user || !alert || alert.status !== 'triggered' || !['buy', 'sell'].includes(alert.actionKey)) return null;
-  const dedupeKey = [user.id, code, alert.actionKey, alert.triggerPrice, eastmoneyDate()].join(':');
+  const alertScope = alert.scope === 'position' ? 'position' : 'quant';
+  const alertIdentity = alert.dedupeKey || alert.triggerPrice;
+  const dedupeKey = [user.id, code, alertScope, alert.actionKey, alertIdentity, eastmoneyDate()].join(':');
   const previousId = APP_STATE.alertDedupe[dedupeKey];
   if (previousId) return APP_STATE.alerts.find((item) => item.id === previousId) || null;
 
@@ -4291,8 +4681,11 @@ async function recordTriggeredAlert({ user, code, name, alert, webhookUrl = ALER
   const event = {
     id: crypto.randomUUID(),
     userId: user.id,
+    scope: alertScope,
     side: alert.actionKey,
-    title: `量化${alert.actionKey === 'buy' ? '买入' : '卖出'}提醒：${alert.title}`,
+    title: alertScope === 'position'
+      ? `持仓量化提醒：${alert.title}`
+      : `量化${alert.actionKey === 'buy' ? '买入' : '卖出'}提醒：${alert.title}`,
     message: alert.summary,
     stock: { code, name: name || code },
     triggerPrice: alert.triggerPrice,
@@ -4302,6 +4695,7 @@ async function recordTriggeredAlert({ user, code, name, alert, webhookUrl = ALER
     channels: {
       inApp: { status: 'delivered', attempts: 1, deliveredAt: createdAt },
       webhook: { status: webhookUrl ? 'pending' : 'not_configured', attempts: 0 },
+      wechatWork: { status: wechatWorkWebhookUrl ? 'pending' : 'not_configured', attempts: 0 },
     },
   };
   APP_STATE.alerts.push(event);
@@ -4309,7 +4703,46 @@ async function recordTriggeredAlert({ user, code, name, alert, webhookUrl = ALER
   await appendAlertLog({ alertId: event.id, userId: user.id, side: event.side, channel: 'in_app', status: 'delivered' });
   await persistAppState();
   void deliverAlertWebhook(event, webhookUrl);
+  void deliverWechatWorkAlert(event, wechatWorkWebhookUrl);
   return event;
+}
+
+let positionMonitorRunning = false;
+async function runPositionMonitor(options = {}) {
+  const force = options.force === true;
+  if (!force && marketStatus().state !== 'open') return { checked: 0, triggered: 0, skipped: 'market_closed' };
+  if (positionMonitorRunning) return { checked: 0, triggered: 0, skipped: 'already_running' };
+  positionMonitorRunning = true;
+  const buildPayloadImpl = options.buildPayloadImpl || buildStockPayload;
+  const recordAlertImpl = options.recordAlertImpl || recordTriggeredAlert;
+  const findUserImpl = options.findUserImpl || findUserById;
+  try {
+    const positionSource = options.positions === undefined ? APP_STATE.positions : safeArray(options.positions);
+    const positions = positionSource.filter((item) => item.shares > 0);
+    const payloads = new Map();
+    let triggered = 0;
+    for (const position of positions) {
+      try {
+        if (!payloads.has(position.code)) {
+          payloads.set(position.code, await buildPayloadImpl(position.code, { refresh: true }));
+        }
+        const payload = payloads.get(position.code);
+        const advice = computePositionAdvice(payload, position);
+        const event = await recordAlertImpl({
+          user: findUserImpl(position.userId),
+          code: position.code,
+          name: payload.quote && payload.quote.name,
+          alert: advice.monitorAlert,
+        });
+        if (event) triggered += 1;
+      } catch (error) {
+        console.error('[position-monitor]', position.code, error.message);
+      }
+    }
+    return { checked: positions.length, triggered };
+  } finally {
+    positionMonitorRunning = false;
+  }
 }
 
 async function handleAlerts(req, res, user) {
@@ -4343,20 +4776,32 @@ async function handleAiSettings(req, res, user) {
   if (body.clear === true) {
     delete user.aiKeyEncrypted;
     delete user.aiKeyLast4;
-  } else if (apiKey) {
-    if (apiKey.length < 12 || apiKey.length > 500) return json(res, 400, { error: 'API Key 长度不正确' });
-    user.aiKeyEncrypted = encryptSecret(apiKey);
-    user.aiKeyLast4 = apiKey.slice(-4);
-  } else if (!user.aiKeyEncrypted) {
-    return json(res, 400, { error: '请输入 API Key' });
+    delete user.aiBaseUrl;
+    delete user.aiModel;
+    user.aiUpdatedAt = new Date().toISOString();
+    await persistAppState();
+    return json(res, 200, { user: publicUser(user), connection: { ok: false, cleared: true } });
   }
+  if (apiKey && (apiKey.length < 12 || apiKey.length > 500)) return json(res, 400, { error: 'API Key 长度不正确' });
   if (!/^https:\/\//i.test(baseUrl)) return json(res, 400, { error: 'API 地址必须使用 HTTPS' });
   if (!model || model.length > 100) return json(res, 400, { error: '模型名称不正确' });
+  const currentConfig = userAiConfig(user);
+  const candidateConfig = { apiKey: apiKey || currentConfig.apiKey, baseUrl, model };
+  if (!candidateConfig.apiKey) return json(res, 400, { error: '请输入 API Key' });
+  try {
+    await verifyAiConfig(candidateConfig);
+  } catch (error) {
+    return json(res, 400, { error: `配置未保存：${aiErrorMessage(error)}` });
+  }
+  if (apiKey) {
+    user.aiKeyEncrypted = encryptSecret(apiKey);
+    user.aiKeyLast4 = apiKey.slice(-4);
+  }
   user.aiBaseUrl = baseUrl;
   user.aiModel = model;
   user.aiUpdatedAt = new Date().toISOString();
   await persistAppState();
-  return json(res, 200, { user: publicUser(user) });
+  return json(res, 200, { user: publicUser(user), connection: { ok: true } });
 }
 
 async function handleSubAccounts(req, res, user) {
@@ -4480,10 +4925,12 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/profile/ai-settings') return await handleAiSettings(req, res, user);
     if (url.pathname === '/api/admin/subaccounts') return await handleSubAccounts(req, res, user);
     if (url.pathname === '/api/alerts') return await handleAlerts(req, res, user);
+    if (url.pathname === '/api/positions') return await handlePositions(req, res, user, url);
     if (url.pathname === '/api/ai/chat') return await handleAiChat(req, res, user);
     if (url.pathname === '/api/market-overview') return await handleMarketOverview(url, res);
     if (url.pathname === '/api/stock') return await handleStock(url, res, user);
     if (url.pathname === '/api/position-advice') return await handlePositionAdvice(url, res);
+    if (url.pathname === '/api/watchlist/events') return await handleWatchlistEvents(url, res);
     if (url.pathname === '/api/watchlist') return await handleWatchlist(url, res);
     if (url.pathname === '/api/search') return await handleSearch(url, res);
     if (url.pathname.startsWith('/api/')) return json(res, 404, { error: 'API not found' });
@@ -4505,27 +4952,41 @@ const authSweep = setInterval(() => {
 }, 30 * 60 * 1000);
 authSweep.unref();
 
+let positionMonitorTimer = null;
 if (require.main === module) {
   server.listen(PORT, HOST, () => {
     console.log(`\n  观澜投研 · StockLens`);
     console.log(`  http://${HOST}:${PORT}`);
     console.log(`  数据源：东方财富公开接口 / 本地多因子模型\n`);
     fs.mkdirSync(SNAPSHOT_DIR, { recursive: true });
+    setTimeout(() => void runPositionMonitor(), 5_000).unref();
+    positionMonitorTimer = setInterval(() => void runPositionMonitor(), POSITION_MONITOR_INTERVAL_MS);
+    positionMonitorTimer.unref();
   });
 }
 
 module.exports = {
   buildWatchlistItem,
   buildStockPayload,
+  computeAi,
   computeQuantAlert,
+  computePositionAdvice,
+  sanitizeSyncedPosition,
+  runPositionMonitor,
   recordTriggeredAlert,
   deliverAlertWebhook,
+  deliverWechatWorkAlert,
   encryptSecret,
   decryptSecret,
   passwordRecord,
   verifyUserPassword,
   canManageAiSettings,
   canCreateSubAccounts,
+  aiEndpoint,
+  aiErrorMessage,
+  requestAiCompletion,
+  verifyAiConfig,
+  userAiConfig,
   parseEastmoneyTrends,
   parseTencentIntraday,
   parseSinaQuote,
@@ -4533,5 +4994,6 @@ module.exports = {
 };
 
 process.on('SIGINT', () => {
+  if (positionMonitorTimer) clearInterval(positionMonitorTimer);
   server.close(() => process.exit(0));
 });

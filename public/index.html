@@ -217,10 +217,11 @@
               <div class="conclusion-advice">
                 <div class="conclusion-label">
                   <span>AI 建议</span>
-                  <em id="conclusionConfidence">置信度 —</em>
+                  <em id="conclusionConfidence" tabindex="0" title="置信度衡量数据完整性与多因子信号一致性，不代表上涨概率。">置信度 —</em>
                 </div>
                 <h3 id="conclusionAdviceTitle">—</h3>
                 <p id="conclusionAdviceText">—</p>
+                <p id="conclusionAdviceWarning" class="conclusion-advice-warning is-hidden"></p>
               </div>
               <div class="conclusion-levels">
                 <div class="conclusion-level support">
@@ -246,6 +247,7 @@
                   </div>
                 </div>
                 <div class="quant-alert-status">
+                  <button class="quant-alert-history-button" id="quantAlertHistoryBtn" type="button" aria-expanded="false" aria-controls="quantAlertHistoryPanel">本页记录 0</button>
                   <em class="signal-badge neutral" id="quantAlertAction">观望 · 监控中</em>
                 </div>
               </div>
@@ -254,13 +256,15 @@
                   <div class="quant-alert-overview">
                     <h3 id="quantAlertTitle">量化条件计算中</h3>
                     <p id="quantAlertText">正在结合实时价格、技术结构与主力资金计算触发条件。</p>
-                    <div class="quant-alert-rule"><span>触发规则</span><b id="quantAlertRule">—</b></div>
+                    <div class="quant-alert-rule"><span>条件单设置</span><div id="quantAlertRule" class="quant-rule-list">—</div></div>
                     <div class="quant-alert-conditions" id="quantAlertConditions"></div>
                   </div>
                   <div class="quant-price-advice">
                     <div class="quant-price-ranges">
-                      <p><span>建议买入区间</span><b id="quantBuyRange">—</b></p>
-                      <p><span>建议卖出区间</span><b id="quantSellRange">—</b></p>
+                      <p><span>低吸观察区</span><b id="quantBuyRange">—</b></p>
+                      <p><span>压力减仓区</span><b id="quantSellRange">—</b></p>
+                      <p><span>右侧确认位</span><b id="quantBreakoutPrice">—</b></p>
+                      <p id="quantRiskRow"><span id="quantRiskLabel">风险防守位</span><b id="quantRiskPrice">—</b></p>
                     </div>
                     <small id="quantPriceBasis">—</small>
                     <small id="quantPriceUpdated">—</small>
@@ -268,6 +272,13 @@
                   </div>
                 </div>
               </div>
+              <section class="quant-alert-history" id="quantAlertHistoryPanel" aria-label="本页量化提醒记录" hidden>
+                <div class="quant-alert-history-head">
+                  <strong>本页量化提醒记录</strong>
+                  <span>当前页面会话内保留，关闭后自动清空</span>
+                </div>
+                <div class="quant-alert-history-list" id="quantAlertHistoryList"></div>
+              </section>
             </article>
 
             <article class="conclusion-card">
@@ -627,8 +638,8 @@
           <div class="position-block">
             <div class="position-head">
               <div>
-                <span>AI 持仓量化建议</span>
-                <small>实时持仓 · 交易流水驱动</small>
+                <span>持仓量化建议</span>
+                <small>规则引擎决策 · 交易流水驱动</small>
               </div>
               <button class="position-edit" id="positionEditBtn" type="button">记一笔</button>
             </div>
@@ -885,7 +896,7 @@
       </div>
       <div class="transaction-preview opening" id="transactionPreview">录入当前持仓后，后续只需继续记买卖流水</div>
       <div class="dialog-ledger" id="positionDialogHistory"></div>
-      <p class="position-dialog-hint">成交金额由“价格 × 股数”自动计算；不填总资金仍可生成建议。全部个股记录会持续保存在当前浏览器，只有点击“清空记录”才会移除。</p>
+      <p class="position-dialog-hint">成交金额由“价格 × 股数”自动计算；不填总资金仍可生成建议。记录保存在当前浏览器，并同步到当前账户供服务端持续监控；只有点击“清空记录”才会移除。</p>
       <div class="position-dialog-actions">
         <button class="position-clear" id="positionClearBtn" type="button">清空记录</button>
         <span class="position-action-spacer"></span>
@@ -895,11 +906,44 @@
     </form>
   </dialog>
 
+  <!-- Watchlist positive-event notification -->
+  <dialog class="watch-event-dialog" id="watchEventDialog" aria-labelledby="watchEventTitle">
+    <article class="watch-event-card">
+      <div class="watch-event-accent" aria-hidden="true">
+        <svg class="icon"><use href="#i-bell"/></svg>
+      </div>
+      <div class="watch-event-head">
+        <div>
+          <p class="panel-kicker">WATCHLIST SIGNAL</p>
+          <div class="watch-event-badges">
+            <span id="watchEventStock">自选股</span>
+            <em id="watchEventType">利好动态</em>
+          </div>
+        </div>
+        <button class="icon-button" id="watchEventCloseBtn" type="button" aria-label="关闭提醒">
+          <svg class="icon"><use href="#i-close"/></svg>
+        </button>
+      </div>
+      <h2 id="watchEventTitle">发现新的自选股动态</h2>
+      <p class="watch-event-summary" id="watchEventSummary"></p>
+      <div class="watch-event-meta">
+        <span><svg class="icon"><use href="#i-clock"/></svg><time id="watchEventTime"></time></span>
+        <a id="watchEventSource" target="_blank" rel="noopener noreferrer">查看原文 <svg class="icon"><use href="#i-external"/></svg></a>
+      </div>
+      <p class="watch-event-disclaimer">消息由公开资讯与公告规则筛选，仅作信息提示，不构成投资建议。</p>
+      <div class="watch-event-actions">
+        <button class="position-cancel" id="watchEventDismissBtn" type="button">知道了</button>
+        <button class="watch-event-view" id="watchEventViewBtn" type="button">查看该股</button>
+      </div>
+    </article>
+  </dialog>
+
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <div class="loading-bar" id="loadingBar"></div>
 
   <script src="/vendor/echarts.min.js"></script>
   <script src="/auth-client.js"></script>
+  <script src="/presentation-logic.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

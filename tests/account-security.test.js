@@ -9,6 +9,10 @@ const {
   verifyUserPassword,
   canManageAiSettings,
   canCreateSubAccounts,
+  aiEndpoint,
+  requestAiCompletion,
+  verifyAiConfig,
+  userAiConfig,
 } = require('../server');
 
 test('encrypts AI API keys without retaining plaintext', () => {
@@ -36,4 +40,57 @@ test('stores child account passwords as salted hashes', () => {
   assert.equal(record.passwordHash.includes('a-secure-password'), false);
   assert.equal(verifyUserPassword(user, 'a-secure-password'), true);
   assert.equal(verifyUserPassword(user, 'wrong-password'), false);
+});
+
+test('uses personal AI settings when present', () => {
+  const key = 'sk-personal-test-1234567890';
+  const config = userAiConfig({
+    id: 'user-a',
+    aiKeyEncrypted: encryptSecret(key),
+    aiBaseUrl: 'https://api.example.com/v1',
+    aiModel: 'example-chat',
+  });
+  assert.deepEqual(config, {
+    apiKey: key,
+    baseUrl: 'https://api.example.com/v1',
+    model: 'example-chat',
+    source: 'personal',
+  });
+});
+
+test('normalizes chat completion endpoints', () => {
+  assert.equal(aiEndpoint('https://api.example.com/v1/'), 'https://api.example.com/v1/chat/completions');
+  assert.equal(aiEndpoint('https://api.example.com/v1/chat/completions'), 'https://api.example.com/v1/chat/completions');
+});
+
+test('verifies AI settings through the configured provider', async () => {
+  let request;
+  const fetchImpl = async (url, options) => {
+    request = { url, options };
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ choices: [{ message: { content: '连接成功' } }] }),
+    };
+  };
+  const config = { apiKey: 'sk-test-1234567890', baseUrl: 'https://api.example.com/v1', model: 'example-chat' };
+  assert.deepEqual(await verifyAiConfig(config, { fetchImpl, timeoutMs: 1_000 }), { ok: true });
+  assert.equal(request.url, 'https://api.example.com/v1/chat/completions');
+  assert.match(request.options.headers.Authorization, /^Bearer sk-test/);
+});
+
+test('reports provider errors instead of accepting a broken AI config', async () => {
+  const fetchImpl = async () => ({
+    ok: false,
+    status: 401,
+    json: async () => ({ error: { message: 'invalid api key' } }),
+  });
+  await assert.rejects(
+    () => requestAiCompletion(
+      { apiKey: 'sk-invalid-123456', baseUrl: 'https://api.example.com/v1', model: 'example-chat' },
+      [{ role: 'user', content: 'test' }],
+      { fetchImpl, timeoutMs: 1_000 },
+    ),
+    /invalid api key/,
+  );
 });
